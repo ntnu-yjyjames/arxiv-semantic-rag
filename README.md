@@ -29,7 +29,7 @@ Tech: FAISS · FastAPI · Streamlit · sentence-transformers · GPU acceleration
   
 ## System Overview
 
-![System Structure](sys_arch.png)
+![System Structure](/backend/sys_arch.png)
 
 
 * At a high level, the system consists of:
@@ -65,7 +65,7 @@ A side-by-side comparison in the Streamlit UI showing **NumPy (baseline)**, **FA
 This section summarizes end-to-end retrieval performance under identical query settings, comparing exact and approximate backends in terms of latency, memory usage, and recall.
 
 1) Exact vs Approximate Search (Latency · Memory · Recall)
-<img src="./bench_images/data50000_top50.png" width="850" />
+<img src="/backend/bench_images/data50000_top50.png" width="850" />
 
 We compare three backends using the same query vectors and top-k configuration:
 * NumPy baseline (full scan, ground truth)
@@ -76,7 +76,7 @@ We compare three backends using the same query vectors and top-k configuration:
 FAISS Flat serves as an exact-search reference within the FAISS ecosystem, whereas the NumPy baseline defines the ground-truth recall.
 
 2) HNSW efSearch Trade-off (Recall vs Search Effort)
-<img src="./bench_images/efs_recall.png" width="850" />
+<img src="/backend/bench_images/efs_recall.png" width="850" />
 
 This ablation study sweeps the HNSW efSearch parameter and reports Recall@k relative to FAISS Flat.
 
@@ -84,7 +84,7 @@ This ablation study sweeps the HNSW efSearch parameter and reports Recall@k rela
 In practice, efSearch ≈ 64 provides a strong balance between retrieval quality and latency.
 
 3) Index Build-Time Scaling (CPU vs GPU)
-<img src="./bench_images/build_time.png" width="850" />
+<img src="/backend/bench_images/build_time.png" width="850" />
 
 We benchmark index construction time as the corpus size grows, comparing CPU-only and GPU-accelerated pipelines.
 
