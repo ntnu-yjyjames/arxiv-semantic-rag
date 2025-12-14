@@ -1,0 +1,19 @@
+{
+  "csv_path": "./arxiv_data/arxiv_cornell_title_abstract.csv",
+  "num_docs": 5000,
+  "batch_size": 512,
+  "max_chars_per_chunk": 2000,
+  "timestamp": "2025-12-12T12:26:18.083307",
+  "cpu": {
+    "use_gpu": false,
+    "total_time_sec": 310.9142384000006,
+    "output_dir": "./bench_index_cpu"
+  },
+  "gpu": {
+    "use_gpu": true,
+    "cuda_available": true,
+    "gpu_name": "NVIDIA GeForce RTX 3080",
+    "total_time_sec": 9.764491699985228,
+    "output_dir": "./bench_index_gpu"
+  }
+}

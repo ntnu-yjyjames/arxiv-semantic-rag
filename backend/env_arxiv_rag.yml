@@ -1,0 +1,21 @@
+name: arxiv_rag
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - faiss-cpu
+  - numpy
+  - pandas
+  - zarr
+  - psutil
+  - pip
+
+  - pip:
+      - "huggingface-hub>=0.34.0,<1.0.0"
+      - sentence-transformers
+      - llama-cpp-python
+      - fastapi
+      - "uvicorn[standard]"
+      - streamlit

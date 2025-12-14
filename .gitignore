@@ -1,0 +1,9 @@
+__pycache__/
+**/arxiv_data/**
+backend/arxiv_zarr/
+backend/models/
+backend/arxiv_faiss_zarr.py
+backend/check_safe_tensor.py
+backend/get_efsearch_data.py
+backend/rag_hf.py
+backend/usage.md
