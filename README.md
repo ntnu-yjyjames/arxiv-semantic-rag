@@ -7,9 +7,8 @@ The system compares **NumPy baseline, FAISS Flat, and FAISS HNSW** under real wo
 analyzing **latency, memory, recall@k**, and **GPU vs CPU scalability**, and integrates
 a local LLM backend (Ollama) for RAG.
 
-**Tech:** FAISS · NumPy · FastAPI · Streamlit · sentence-transformers · Ollama
+**Tech:** FAISS · NumPy · FastAPI · Streamlit · sentence-transformers · Ollama · GPU acceleration
 
-Tech: FAISS · FastAPI · Streamlit · sentence-transformers · GPU acceleration
 ## System Features
 - **Semantic Retrieval Systems**
   Dense retrieval over arXiv papers using NumPy (baseline), FAISS Flat (exact),
@@ -57,7 +56,7 @@ Tech: FAISS · FastAPI · Streamlit · sentence-transformers · GPU acceleration
 
 This project benchmarks **exact vs approximate** vector retrieval under realistic settings, measuring **latency, memory**, and **Recall@k** (against a NumPy full-scan ground truth).
 
-### 1) Exact vs Approximate Search (Demo)
+### Faiss v.s. Baseline Benchmark(Demo)
 A side-by-side comparison in the Streamlit UI showing **NumPy (baseline)**, **FAISS Flat (exact)**, and **FAISS HNSW (ANN)** with consistent query inputs.
 
 > **Takeaway:** HNSW achieves near-Flat quality with significantly lower latency after tuning `efSearch`.
