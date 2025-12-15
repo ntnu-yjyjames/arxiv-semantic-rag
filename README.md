@@ -52,6 +52,20 @@ a local LLM backend (Ollama) for RAG.
         * Thin RAG wrapper for pluggable LLM runtimes
 
 
+## Motivation & Engineering Goals
+
+This repository is built to explore **practical ML systems questions** around semantic retrieval and RAG, including:
+
+- When is approximate nearest neighbour search “good enough”?
+- How do latency, memory usage, and recall trade off in practice?
+- How does retrieval quality shape downstream RAG answers?
+- How do system choices (CPU vs GPU, Flat vs HNSW) affect scalability and cost?
+
+It is intended to be both:
+
+- an **applied reference implementation** for semantic retrieval & RAG, and  
+- an **end-to-end ML systems case study**, covering design, indexing, benchmarking, and deployment.
+
 ## Benchmarks & Trade-offs
 
 This project benchmarks **exact vs approximate** vector retrieval under realistic settings, measuring **latency, memory**, and **Recall@k** (against a NumPy full-scan ground truth).
@@ -96,20 +110,6 @@ Recall@k is computed relative to the NumPy full-scan baseline.
 All measurements reflect end-to-end system latency, including backend calls and result aggregation.
 
 The goal is to characterize system-level trade-offs, rather than isolated kernel performance.
-
-## Motivation & Engineering Goals
-
-This repository is built to explore **practical ML systems questions** around semantic retrieval and RAG, including:
-
-- When is approximate nearest neighbour search “good enough”?
-- How do latency, memory usage, and recall trade off in practice?
-- How does retrieval quality shape downstream RAG answers?
-- How do system choices (CPU vs GPU, Flat vs HNSW) affect scalability and cost?
-
-It is intended to be both:
-
-- an **applied reference implementation** for semantic retrieval & RAG, and  
-- an **end-to-end ML systems case study**, covering design, indexing, benchmarking, and deployment.
 
 
 ## Installation & Running
