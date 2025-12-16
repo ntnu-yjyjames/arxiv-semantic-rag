@@ -16,7 +16,7 @@ from sentence_transformers import SentenceTransformer
 from arxiv_faiss_zarr.config import EMBED_MODEL_NAME
 
 #INDEX_DIR = "./arxiv_zarr/arxiv_index_demo_transformer"  
-INDEX_DIR = "./arxiv_zarr/arxiv_index_50000"  
+INDEX_DIR = "./arxiv_zarr/arxiv_index_full"  
 
 # 與 build 時一致
 HNSW_EF_SEARCH = 64
@@ -80,6 +80,9 @@ class IndexResources:
         self.doc_titles: Dict[int, str] = {}
         # title(lower) -> doc_idx list
         self.title2docs: Dict[str, List[int]] = defaultdict(list)
+        
+        # 用於 baseline mode="hot" 的 in-memory embeddings
+        self._emb_hot: np.ndarray | None = None
 
         for row_idx, m in enumerate(self.metadata):
             doc_idx = int(m["doc_idx"])
@@ -97,6 +100,7 @@ class IndexResources:
         # 新增：載入同一個 embedding model，給「查詢問題」用
         print(f"[IndexResources] Loading embedding model for queries: {EMBED_MODEL_NAME}")
         self.query_model = SentenceTransformer(EMBED_MODEL_NAME)
+
 
     # -------- Doc / user 向量 --------
 
@@ -183,19 +187,42 @@ class IndexResources:
 
         return scores[0], idx[0].astype(int), elapsed, rss_mb, delta_mb
     
-    def search_baseline(self, query_vec: np.ndarray, top_k: int = 5):
+    def search_baseline(self,
+                    query_vec: np.ndarray,
+                    top_k: int = 5,
+                    mode: str = "cold"):
+        """
+        NumPy full-scan baseline.
+
+        mode = "cold":
+            每次 query 都從 Zarr 讀 embeddings，再 full-scan。
+            模擬 disk-based pipeline 的 end-to-end latency。
+        mode = "hot":
+            embeddings 只在第一次載入到 self._emb_hot，之後每次 query 都在記憶體中 full-scan。
+            模擬 in-memory NumPy baseline。
+        """
         proc = psutil.Process(os.getpid())
         rss_before = proc.memory_info().rss
 
         start_total = time.perf_counter()
 
-        # 1) 讀取 embeddings（重）
-        emb = self.emb_store[:]    # (N, dim)
+        # 1) 取出 embeddings
+        if mode == "cold":
+            emb = self.emb_store[:]       # 每次都從磁碟讀
+        elif mode == "hot":
+            if self._emb_hot is None:
+                # 第一次載入到記憶體，之後重用
+                self._emb_hot = self.emb_store[:]
+            emb = self._emb_hot
+        else:
+            raise ValueError(f"Unknown baseline mode: {mode}")
 
         # 2) full-scan 內積 + top-k
         N = emb.shape[0]
-        top_k_eff = min(top_k, N)
+        if N == 0:
+            raise RuntimeError("No embeddings in baseline search.")
 
+        top_k_eff = min(top_k, N)
         scores_all = emb @ query_vec
 
         if top_k_eff == N:
@@ -207,7 +234,7 @@ class IndexResources:
 
         scores_top = scores_all[idx]
 
-        elapsed_total = time.perf_counter() - start_total   # ← 包含載入 + 計算
+        elapsed_total = time.perf_counter() - start_total
 
         rss_after = proc.memory_info().rss
         rss_mb = rss_after / 1e6
@@ -265,7 +292,7 @@ class IndexResources:
         backends: List[Dict[str, Any]] = []
 
         # 1) baseline 當 ground truth
-        base_scores, base_idx, base_elapsed, base_rss, base_delta = self.search_baseline(user_vec, top_k)
+        base_scores, base_idx, base_elapsed, base_rss, base_delta = self.search_baseline(user_vec, top_k,mode="hot")
         base_results = self.format_results(base_scores, base_idx)
         backends.append({
             "backend": "baseline",
@@ -407,14 +434,11 @@ class IndexResources:
         return doc_results
     
     def search_chunks_with_backend(self,
-                                   query_vec: np.ndarray,
-                                   backend: str,
-                                   top_k: int,
-                                   ef_search: int | None = None):
-        """
-        根據 backend 做 chunk-level 搜尋，回傳 (scores, idx)。
-        如果 backend 是 faiss_hnsw，會使用指定的 ef_search。
-        """
+                               query_vec: np.ndarray,
+                               backend: str,
+                               top_k: int,
+                               baseline_mode: str = "cold",
+                               ef_search: int | None = None):
         total_chunks = len(self.metadata)
         if total_chunks <= 0:
             raise RuntimeError("No chunks in index.")
@@ -426,12 +450,13 @@ class IndexResources:
         elif backend == "faiss_hnsw":
             out = self.search_hnsw(query_vec, top_k=top_k, ef_search=ef_search)
         elif backend == "baseline":
-            out = self.search_baseline(query_vec, top_k=top_k)
+            out = self.search_baseline(query_vec, top_k=top_k, mode=baseline_mode)
         else:
             raise ValueError(f"Unknown backend for recommend: {backend}")
 
         scores, idx, *rest = out
         return scores, idx
+
 
     def aggregate_doc_scores(self,
                              scores,

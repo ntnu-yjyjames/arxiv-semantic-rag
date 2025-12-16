@@ -89,7 +89,11 @@ def search(req: SearchRequest):
             ef_search=req.ef_search,
         )
     else:  # baseline
-        scores, idx, elapsed, rss_mb, delta_mb = res.search_baseline(user_vec, top_k=req.top_k)
+        scores, idx, elapsed, rss_mb, delta_mb = res.search_baseline(
+            user_vec,
+            top_k=req.top_k,
+            mode="hot",   
+        )
 
     elapsed_ms = (time.perf_counter() - start) * 1000
     results = res.format_results(scores, idx)

@@ -107,11 +107,25 @@ def main():
             rows.append({
                 "backend": b["backend"],
                 "latency_ms": b["elapsed_ms"],
-                "memory_rss_mb": b["memory_rss_mb"],
-                "memory_delta_mb": b["memory_delta_mb"],
+                "extra_mem_mb_per_query": b["memory_delta_mb"],
                 "recall_at_k": b["recall_at_k"],
             })
+
         bench_df = pd.DataFrame(rows)
+
+        st.subheader("Search: Latency / Extra Memory / Recall Summary")
+
+        st.markdown(
+            """
+            - **latency_ms**: average per-query latency (ms) for this backend.  
+            - **extra_mem_mb_per_query**: approximate per-query RSS increase (MB).
+
+            > This value is only meaningful for the NumPy baseline (especially in the cold scenario, where
+            > embeddings are reloaded from disk on each query). FAISS Flat / HNSW keep their indices resident
+            > in memory, so per-query extra memory is essentially zero.
+            """
+        )
+
 
         st.subheader("Search: Latency / Memory / Recall Summary")
         st.dataframe(bench_df, use_container_width=True)
@@ -124,8 +138,8 @@ def main():
             st.bar_chart(lat_df)
 
         with col2:
-            st.markdown("#### ΔMemory during search (MB)")
-            mem_df = bench_df.set_index("backend")[["memory_delta_mb"]]
+            st.markdown("#### Extra memory per query (MB)")
+            mem_df = bench_df.set_index("backend")[["extra_mem_mb_per_query"]]
             st.bar_chart(mem_df)
 
         with col3:
@@ -165,14 +179,15 @@ def main():
         """
     )
 
-    # 2. 你的夢幻數據
-    hnsw_stats = {
+    
+    '''hnsw_stats = {
         16:  {"latency_ms": 0.20, "recall": 0.9830},
         32:  {"latency_ms": 0.21, "recall": 0.9925},
         64:  {"latency_ms": 0.26, "recall": 0.9965},
         128: {"latency_ms": 0.36, "recall": 0.9995},
         256: {"latency_ms": 0.58, "recall": 1.0000},
-    }
+    }#'''
+    hnsw_stats = {8: {"latency_ms": 2.58, "recall": 0.8695}, 16: {"latency_ms": 2.31, "recall": 0.9412}, 32: {"latency_ms": 2.75, "recall": 0.975}, 64: {"latency_ms": 3.59, "recall": 0.9877}, 128: {"latency_ms": 4.86, "recall": 0.9982}, 256: {"latency_ms": 7.42, "recall": 0.9992}, 512: {"latency_ms": 12.55, "recall": 0.9992}, 1024: {"latency_ms": 21.49, "recall": 0.9995}}
 
     rows = []
     for ef, v in hnsw_stats.items():
@@ -194,7 +209,8 @@ def main():
             y=alt.Y(
                 "latency_ms:Q",
                 title="Latency (ms)",
-                scale=alt.Scale(domain=[0.15, 0.65]), 
+                #scale=alt.Scale(domain=[0.15, 0.65]),
+                scale=alt.Scale(domain=[2.00, 22.0]), 
             ),
             tooltip=[
                 alt.Tooltip("efSearch", title="efSearch"),
@@ -236,7 +252,8 @@ def main():
                 "recall:Q",
                 title="Recall@10 (Relative to Flat)",
                 
-                scale=alt.Scale(domain=[0.98, 1.0005]), 
+                #scale=alt.Scale(domain=[0.98, 1.0005]),
+                scale=alt.Scale(domain=[0.85, 1.0005]), 
             ),
             tooltip=[
                 alt.Tooltip("efSearch", title="efSearch"),

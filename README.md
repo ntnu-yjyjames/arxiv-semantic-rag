@@ -66,50 +66,77 @@ It is intended to be both:
 - an **applied reference implementation** for semantic retrieval & RAG, and  
 - an **end-to-end ML systems case study**, covering design, indexing, benchmarking, and deployment.
 
-## Benchmarks & Trade-offs
+## Dataset
 
-This project benchmarks **exact vs approximate** vector retrieval under realistic settings, measuring **latency, memory**, and **Recall@k** (against a NumPy full-scan ground truth).
+All experiments in this project are conducted on the **arxiv_cornell_title_abstract**
+dataset, which contains titles and abstracts from a curated subset of arXiv papers.
+This dataset is commonly used for semantic retrieval and recommendation research
+and provides a realistic workload for evaluating vector search systems without
+requiring full-text processing.
 
-### Faiss v.s. Baseline Benchmark(Demo)
-A side-by-side comparison in the Streamlit UI showing **NumPy (baseline)**, **FAISS Flat (exact)**, and **FAISS HNSW (ANN)** with consistent query inputs.
+While the corpus size is smaller than the complete arXiv dump, it is sufficient to
+expose system-level behaviors such as cold-start latency, memory allocation
+patterns, ANN parameter sensitivity, and scalability trends. The benchmarking
+focus of this project is on **retrieval-system trade-offs**, rather than absolute
+throughput at maximum corpus scale.
 
-> **Takeaway:** HNSW achieves near-Flat quality with significantly lower latency after tuning `efSearch`.
+## Performance Benchmarks & System Analysis
 
-This section summarizes end-to-end retrieval performance under identical query settings, comparing exact and approximate backends in terms of latency, memory usage, and recall.
+This project benchmarks **exact vs. approximate** vector retrieval under
+production-oriented settings, focusing on **system latency, memory stability,
+and Recall@k** to expose trade-offs between brute-force matrix operations (NumPy)
+and indexed ANN retrieval (FAISS).
 
-1) Exact vs Approximate Search (Latency · Memory · Recall)
-<img src="/backend/bench_images/data50000_top50.png" width="850" />
+### 1. Cold Start: System Latency & Memory Stability
 
-We compare three backends using the same query vectors and top-k configuration:
-* NumPy baseline (full scan, ground truth)
-* FAISS Flat (exact nearest neighbour)
-* FAISS HNSW (approximate nearest neighbour)
+<img src="/backend/bench_images/cold_start_benchmark.png" width="850" />
 
-> **Takeaway**: FAISS HNSW achieves orders-of-magnitude lower latency than exact search while retaining high recall.
-FAISS Flat serves as an exact-search reference within the FAISS ecosystem, whereas the NumPy baseline defines the ground-truth recall.
+> **Observation:** Under cold-start conditions, the NumPy baseline exhibits severe
+instability, incurring a **73 ms latency spike** and an **~83 MB memory allocation
+surge** during initialization. In contrast, FAISS HNSW remains stable at **0.29 ms**
+with negligible memory overhead (<0.1 MB).
 
-2) HNSW efSearch Trade-off (Recall vs Search Effort)
+* **Baseline (NumPy):** 73.70 ms (I/O & allocation bound)
+* **FAISS HNSW:** 0.29 ms (memory-resident)
+* **System-level speedup:** ~254×
+
+**Insight:** Eliminating initialization and allocation bottlenecks is critical for
+low-latency, stateless ML microservices.
+
+---
+
+### 2. Hot Cache: Algorithmic Latency
+
+<img src="/backend/bench_images/hot_start_benchmark.png" width="850" />
+
+> **Observation:** With all data resident in memory, NumPy’s BLAS-optimized linear
+scan achieves competitive performance (**2.66 ms**) on small datasets. However,
+FAISS HNSW delivers a **~4× algorithmic speedup (0.66 ms)** by reducing search
+complexity from \(O(N)\) to sublinear traversal.
+
+**Takeaway:** Exact scans may appear fast at small scale, but degrade linearly,
+while HNSW maintains sub-millisecond latency as data grows.
+
+---
+
+### 3. Recall vs. Latency Trade-off (`efSearch`)
+
 <img src="/backend/bench_images/efs_recall.png" width="850" />
 
-This ablation study sweeps the HNSW efSearch parameter and reports Recall@k relative to FAISS Flat.
+> **Takeaway:** Tuning `efSearch` reveals a clear **Pareto frontier**, achieving
+**0.96 Recall@k** while maintaining sub-millisecond latency—enabling controlled
+trade-offs between retrieval quality and throughput.
 
-> **Takeaway**: Recall increases monotonically with efSearch, with diminishing returns beyond a moderate range.
-In practice, efSearch ≈ 64 provides a strong balance between retrieval quality and latency.
+---
 
-3) Index Build-Time Scaling (CPU vs GPU)
+### 4. Index Build-Time Scaling (CPU vs GPU)
+
 <img src="/backend/bench_images/build_time.png" width="850" />
 
-We benchmark index construction time as the corpus size grows, comparing CPU-only and GPU-accelerated pipelines.
+> **Takeaway:** GPU acceleration provides tens-of-times speedups in index
+construction as corpus size increases, ensuring scalable index refresh in CI/CD
+pipelines.
 
-> **Takeaway**: GPU acceleration significantly improves build throughput and scales more favorably with corpus size, achieving tens-of-times speedups over CPU-only builds for larger collections.
-
-Notes on Benchmark Design
-
-Recall@k is computed relative to the NumPy full-scan baseline.
-
-All measurements reflect end-to-end system latency, including backend calls and result aggregation.
-
-The goal is to characterize system-level trade-offs, rather than isolated kernel performance.
 
 
 ## Installation & Running

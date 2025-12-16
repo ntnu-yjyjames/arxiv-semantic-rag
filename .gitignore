@@ -7,3 +7,4 @@ backend/check_safe_tensor.py
 backend/get_efsearch_data.py
 backend/rag_hf.py
 backend/usage.md
+backend/test_latency.py
