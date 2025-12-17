@@ -6,7 +6,6 @@ This document details the benchmarking methodology, results, and engineering tra
 * **Dataset:** **arxiv_cornell_title_abstract**
     > All experiments in this project are conducted on the **arxiv_cornell_title_abstract** dataset, which contains titles and abstracts from a curated subset of arXiv papers. This dataset is commonly used for semantic retrieval and recommendation research and provides a realistic workload for evaluating vector search systems without requiring full-text processing.
 * **Dimensions:** 768 (using sentence-transformers embeddings)
-* **Hardware:** [Insert Your CPU/RAM Specs here]
 * **Metrics:** End-to-end Latency (ms), Memory Usage (MB), and Recall@k (ground truth: NumPy full scan).
 
 ---
