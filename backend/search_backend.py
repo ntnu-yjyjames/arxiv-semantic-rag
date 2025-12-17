@@ -13,10 +13,11 @@ import zarr
 
 
 from sentence_transformers import SentenceTransformer
-from arxiv_faiss_zarr.config import EMBED_MODEL_NAME
+from indexing.config import EMBED_MODEL_NAME
 
 # Use your own data path(with FAISS/ZARR index)
-INDEX_DIR = "./arxiv_zarr/arxiv_index_full"  
+#INDEX_DIR = "./arxiv_zarr/arxiv_index_full" 
+INDEX_DIR = "./arxiv_zarr/arxiv_index_demo_transformer"  
 
 # Aligned with building parameters
 HNSW_EF_SEARCH = 64
@@ -36,16 +37,42 @@ def _load_metadata(meta_path: str) -> List[Dict[str, Any]]:
 
 class IndexResources:
     """
-    負責載入並管理：
-      - embeddings.zarr
-      - faiss_index_flat.bin
-      - faiss_index_hnsw.bin (若存在)
-      - metadata.jsonl
-      - doc/chunk 對應關係
+    Centralized resource manager acting as the data access layer for the RAG pipeline.
+
+    This class orchestrates the lifecycle of high-memory artifacts to ensure efficient 
+    retrieval. It serves as a **Singleton** (managed by the app state) to prevent 
+    redundant reloading of heavy indices.
+
+    Core Responsibilities:
+    1. **Storage Abstraction**: Manages pointers to on-disk Zarr arrays (Embeddings) and in-memory FAISS indices.
+    2. **Metadata Indexing**: Builds O(1) lookup tables (Reverse Indices) to map Documents <-> Chunks.
+    3. **Query Engine**: Holds the shared SentenceTransformer model for real-time query encoding.
+
+    Attributes:
+        emb_store (zarr.Array): Memory-mapped interface to the Zarr embedding store on disk.
+        faiss_index_flat (faiss.IndexFlatIP): The baseline exact search index.
+        faiss_index_hnsw (Optional[faiss.IndexHNSWFlat]): The optimized approximate index (if available).
+        metadata (List[Dict]): Full list of chunk-level metadata (Titles, Sections).
+        doc2rows (Dict[int, List[int]]): Reverse index mapping internal doc_idx -> list of chunk row indices.
+        title2docs (Dict[str, List[int]]): Inverted index for fast title-based document lookup.
     """
 
 
     def __init__(self, index_dir: str):
+        """
+        Initializes the resource pool by validating paths and hydrating lookup tables.
+
+        Performs a linear scan of metadata to build the `doc2rows` and `title2docs` 
+        maps, enabling fast aggregation for recommendation tasks.
+        doc_titles (Dict[int, str]): Canonical title string for each internal doc_idx.
+
+        Args:
+            index_dir (str): Directory path containing the build artifacts 
+                             (`embeddings.zarr`, `faiss_*.bin`, `metadata.jsonl`).
+
+        Raises:
+            FileNotFoundError: If critical artifacts (Zarr, Flat Index, Metadata) are missing.
+        """
         zarr_path = os.path.join(index_dir, "embeddings.zarr")
         faiss_flat_path = os.path.join(index_dir, "faiss_index_flat.bin")
         faiss_hnsw_path = os.path.join(index_dir, "faiss_index_hnsw.bin")
@@ -105,6 +132,23 @@ class IndexResources:
     # -------- Doc / user 向量 --------
 
     def compute_doc_embedding(self, doc_idx: int) -> np.ndarray:
+        """
+        Aggregates chunk-level embeddings into a single document-level vector.
+
+        Strategy: **Mean Pooling**. 
+        This function fetches all embedding vectors associated with the given document ID 
+        from the Zarr store and computes their centroid (average). The result is 
+        L2-normalized to represent the document's overall semantic theme.
+
+        Args:
+            doc_idx (int): Internal document index (0-based) used within this index.
+
+        Returns:
+            np.ndarray: A normalized float32 vector of shape (dim,).
+
+        Raises:
+            ValueError: If the document has no associated chunks (data consistency error).
+        """
         rows = self.doc2rows.get(doc_idx)
         if not rows:
             raise ValueError(f"doc_idx {doc_idx} has no chunks")
@@ -114,6 +158,26 @@ class IndexResources:
         return v
 
     def compute_user_vector_from_titles(self, titles: List[str]) -> np.ndarray:
+        """
+        Synthesizes a 'User Interest Vector' from a list of preferred paper titles.
+
+        This acts as the query encoder for both search and recommendation: 
+        it constructs a profile vector by averaging document embeddings for the selected titles.
+        
+        Process:
+        1. Resolution: Maps text titles to internal Document IDs.
+        2. Aggregation: Computes document vectors for each ID.
+        3. Profiling: Calculates the global mean (Centroid) of these document vectors.
+
+        Args:
+            titles (List[str]): List of exact paper titles provided by the user.
+
+        Returns:
+            np.ndarray: The normalized user query vector ready for vector search.
+
+        Raises:
+            ValueError: If none of the provided titles can be found in the index.
+        """
         doc_indices: List[int] = []
         for t in titles:
             key = t.strip().lower()
@@ -144,10 +208,37 @@ class IndexResources:
     # -------- 搜尋：FAISS flat / HNSW / baseline --------
 
     def _measure_memory(self):
+        """
+        Captures the current Resident Set Size (RSS) of the process.
+
+        Used to calculate the memory overhead (delta) of a specific search operation.
+        
+        Returns:
+            int: Memory usage in bytes.
+        """
         proc = psutil.Process(os.getpid())
         return proc.memory_info().rss
 
     def search_faiss_flat(self, user_vec: np.ndarray, top_k: int = 10):
+        """
+        Executes an exact nearest neighbor search using FAISS's optimized C++ backend.
+
+        Unlike the naive NumPy baseline, this uses `IndexFlatIP` (Inner Product), which 
+        is faster on CPU due to BLAS/MKL optimizations but still performs an exhaustive 
+        scan (O(N)).
+
+        Args:
+            user_vec (np.ndarray): The normalized query vector (shape: [dim]).
+            top_k (int): Number of results to retrieve.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, float, float, float]:
+                - scores: Cosine similarity scores (assuming embeddings and query are L2-normalized).
+                - indices: Vector row indices (into the embedding/metadata arrays).
+                - elapsed: Latency in seconds.
+                - rss_mb: Total memory usage after search.
+                - delta_mb: Transient memory spike during search.
+        """
         rss_before = self._measure_memory()
         start = time.perf_counter()
 
@@ -165,6 +256,30 @@ class IndexResources:
                     query_vec: np.ndarray,
                     top_k: int = 10,
                     ef_search: int | None = None):
+        """
+        Executes an Approximate Nearest Neighbor (ANN) search using the HNSW graph.
+
+        This method allows dynamic tuning of the `efSearch` parameter at runtime,
+        enabling a trade-off between recall and latency without rebuilding the index.
+
+        Args:
+            query_vec (np.ndarray): L2-normalized query vector of shape (dim,).
+            top_k (int): Number of neighbors to return.
+            ef_search (int | None): 
+                Search depth. Higher values increase recall at the cost of latency.
+                If None, uses the global default (HNSW_EF_SEARCH).
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, float, float, float]:
+                - scores: Similarity scores (cosine similarity if embeddings are normalized).
+                - indices: Vector row indices (used to look up chunk metadata).
+                - elapsed: Search latency in seconds.
+                - rss_mb: Process RSS after the search (MB).
+                - delta_mb: RSS increase during the search (MB).
+
+        Raises:
+            RuntimeError: If the HNSW index was not built/loaded (e.g., in `no-hnsw` mode).
+        """
         if self.faiss_index_hnsw is None:
             raise RuntimeError("HNSW index is not available. Did you build it?")
 
@@ -192,14 +307,38 @@ class IndexResources:
                     top_k: int = 5,
                     mode: str = "cold"):
         """
-        NumPy full-scan baseline.
+        NumPy full-scan baseline used for comparison against FAISS Flat / HNSW.
 
-        mode = "cold":
-            每次 query 都從 Zarr 讀 embeddings，再 full-scan。
-            模擬 disk-based pipeline 的 end-to-end latency。
-        mode = "hot":
-            embeddings 只在第一次載入到 self._emb_hot，之後每次 query 都在記憶體中 full-scan。
-            模擬 in-memory NumPy baseline。
+        This method performs an exact search by multiplying the entire embedding
+        matrix by the query vector and selecting the top-k scores.
+
+        Two modes are supported:
+
+        - mode = "cold":
+            - On every call, load embeddings from the Zarr store (`self.emb_store[:]`),
+            then perform a full-scan.
+            - Simulates an end-to-end, disk-based pipeline (serverless / memory-constrained).
+
+        - mode = "hot":
+            - On first use, load embeddings into `self._emb_hot` once and reuse them
+            on subsequent calls.
+            - Simulates an in-memory NumPy baseline (all embeddings resident in RAM).
+
+        The returned latency always covers the full operation for the chosen mode
+        (i.e., load + compute in "cold", compute-only in "hot").
+
+        Args:
+            query_vec (np.ndarray): L2-normalized query vector of shape (dim,).
+            top_k (int): Number of nearest neighbors to return.
+            mode (str): Either "cold" or "hot", as described above.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, float, float, float]:
+                - scores_top: top-k similarity scores (cosine similarity if embeddings are normalized).
+                - idx:        top-k row indices into the embedding/metadata arrays.
+                - elapsed:    total latency in seconds for this call (including load in "cold").
+                - rss_mb:     process RSS after the search (MB).
+                - delta_mb:   RSS increase during the search (MB).
         """
         proc = psutil.Process(os.getpid())
         rss_before = proc.memory_info().rss
@@ -247,6 +386,24 @@ class IndexResources:
 
     def format_results(self, scores: np.ndarray,
                        indices: np.ndarray) -> List[Dict[str, Any]]:
+        """
+        Hydrates raw search results with metadata for frontend/API display.
+
+        This function maps low-level vector row indices (as returned by FAISS or the
+        baseline search) back to their corresponding chunk-level metadata. It also injects
+        ranking information (`rank`) and normalizes types (e.g., np.float32 -> float)
+        for JSON serialization.
+
+        Args:
+            scores (np.ndarray): Similarity scores from the search engine.
+            indices (np.ndarray): Corresponding chunk row indices into `self.metadata`.
+
+        Returns:
+            List[Dict[str, Any]]: A list of result objects with fields such as:
+                - rank, score
+                - chunk_row, doc_idx
+                - title, section, chunk_index, chunk_text
+        """
         results = []
         for rank, (s, i) in enumerate(zip(scores, indices), start=1):
             m = self.metadata[int(i)]
@@ -263,6 +420,18 @@ class IndexResources:
         return results
 
     def list_some_titles(self, limit: int = 50) -> List[str]:
+        """
+        Retrieves a sample of document titles for UI population.
+
+        Useful for populating "Example Queries" or dropdown menus in the frontend 
+        to help users overcome the "Cold Start" problem (not knowing what to search).
+        
+        Args:
+            limit (int): Maximum number of titles to return.
+
+        Returns:
+            List[str]: A list of unique paper titles.
+        """
         titles = []
         for d, t in self.doc_titles.items():
             titles.append(t)
@@ -275,6 +444,23 @@ class IndexResources:
     @staticmethod
     def compute_recall_at_k(ground_idx: np.ndarray,
                             approx_idx: np.ndarray) -> float:
+        """
+        Calculates a simple Recall@K metric given two sets of result indices.
+
+        Definition:
+            Recall@K = |Intersection(Ground Truth, Approximation)| / |Ground Truth|
+
+        In the benchmarking code, `ground_idx` is typically taken from an exact
+        baseline search (e.g., NumPy full-scan or FAISS Flat), and `approx_idx`
+        from an approximate or alternative backend (e.g., HNSW).
+
+        Args:
+            ground_idx (np.ndarray): Array of indices from the ground truth backend.
+            approx_idx (np.ndarray): Array of indices from the candidate backend.
+
+        Returns:
+            float: A score between 0.0 and 1.0 (1.0 = perfect match).
+        """
         gset = set(int(i) for i in ground_idx)
         aset = set(int(i) for i in approx_idx)
         if not gset:
@@ -283,11 +469,22 @@ class IndexResources:
 
     def benchmark_backends(self, user_vec: np.ndarray, top_k: int = 10) -> List[Dict[str, Any]]:
         """
-        同一個 user_vec 下，對 baseline / faiss_flat / hnsw 做比較：
-          - latency
-          - memory
-          - recall@k (以 baseline 作為 ground truth)
-        回傳：每個 backend 一個 dict，含 metrics + results。
+        Runs a comparative benchmark across all available search backends.
+
+        This method acts as an experiment runner, executing the same query against:
+        1. **NumPy Baseline** (in-memory full-scan, used as ground truth).
+        2. **FAISS Flat** (CPU exact search).
+        3. **FAISS HNSW** (approximate ANN search, if available).
+
+        It captures key metrics (latency, RSS, memory delta, Recall@k) to visualize
+        the trade-offs between accuracy and performance in the frontend.
+
+        Args:
+            user_vec (np.ndarray): The query vector (typically a user interest vector).
+            top_k (int): Number of nearest neighbors to retrieve.
+
+        Returns:
+            List[Dict[str, Any]]: A list of structured metric reports, one per backend.
         """
         backends: List[Dict[str, Any]] = []
 
@@ -335,7 +532,17 @@ class IndexResources:
     # --------  For RAG  --------
     def encode_query(self, text: str) -> np.ndarray:
         """
-        將使用者的問題轉成向量（跟建 index 時用的模型一致）。
+        Encodes a natural language query into a normalized dense vector.
+
+        This method ensures the query vector resides in the same latent space as the 
+        indexed chunks. It applies **L2 Normalization** so that the subsequent 
+        Inner Product search is mathematically equivalent to Cosine Similarity.
+
+        Args:
+            text (str): The user's input question.
+
+        Returns:
+            np.ndarray: A float32 unit vector of shape (embedding_dim,).
         """
         emb = self.query_model.encode(
             [text],
@@ -349,8 +556,19 @@ class IndexResources:
     
     def search_chunks_for_question(self, question: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """
-        用問題文字（question）做向量，對 flat index 搜尋 top_k chunks，
-        回傳格式為 format_results()。
+        Performs semantic search to retrieve the most relevant text chunks for a question.
+
+        Pipeline:
+        1. Encode question -> Vector.
+        2. Vector Search -> Top-K raw indices (using Flat index for precision).
+        3. Hydration -> Metadata enrichment (IDs to Text).
+
+        Args:
+            question (str): The user's query.
+            top_k (int): Number of context chunks to retrieve.
+
+        Returns:
+            List[Dict[str, Any]]: Hydrated search results sorted by relevance score.
         """
         q_vec = self.encode_query(question)
         scores, idx, _, _, _ = self.search_faiss_flat(q_vec, top_k=top_k)
@@ -358,10 +576,20 @@ class IndexResources:
     
     def aggregate_doc_scores(self, scores, idx, exclude_docs=None, top_k_docs=10):
         """
-        將 chunk-level 結果聚合成 doc-level：
-          - 每篇 doc 的分數 = 該 doc 所有 chunk 分數的最大值
-          - 可選擇排除 exclude_docs (set of doc_idx)
-        回傳: List[{"doc_idx", "score", "title"} ...]，已排序取前 top_k_docs
+        Aggregates chunk-level search results into document-level recommendations.
+
+        Aggregation Strategy: **Max Pooling**.
+        The relevance score of a document is defined as the maximum score of its 
+        constituent chunks found in the search results. This assumes that if *any* part of a paper is highly relevant, the whole paper is worth recommending.
+
+        Args:
+            scores (np.ndarray): Similarity scores from vector search.
+            idx (np.ndarray): Corresponding chunk indices.
+            exclude_docs (set | None): Set of doc_idxs to filter out (e.g., the query paper itself).
+            top_k_docs (int): Number of unique documents to return.
+
+        Returns:
+            List[Dict]: Ranked list of unique documents with their best matching score.
         """
         if exclude_docs is None:
             exclude_docs = set()
@@ -394,13 +622,27 @@ class IndexResources:
                                    top_k_docs: int = 10,
                                    candidate_chunks: int = 1000):
         """
-        根據使用者勾選的 titles 做推薦：
-          1) 用這些 titles 對應的 doc 建立 user vector
-          2) 用 backend (faiss_flat / faiss_hnsw / baseline) 搜尋 chunk
-          3) 將 chunk-level 結果聚合為 doc-level，
-             並排除這些 titles 所對應的 doc（只推薦新文章）
+        Generates paper recommendations based on a list of seed papers (User History).
 
-        回傳：doc-level 推薦結果 list[{'doc_idx', 'score', 'title'}, ...]
+        This implements an **Item-to-Item Discovery** pipeline:
+        1. **Profile Construction**: Computes a centroid vector from the input titles.
+        2. **Candidate Generation**: Retrieves a broad set of relevant chunks (e.g., 1000) 
+           to ensure sufficient coverage for document-level scoring.
+        3. **Filtering**: Explicitly excludes the input seed papers to promote discovery of *new* content.
+        4. **Aggregation**: Scores and ranks the remaining documents.
+
+        Args:
+            titles (List[str]): List of papers the user already likes (The "Seed").
+            backend (str): Search engine to use ('faiss_hnsw' for speed, 'faiss_flat' for precision).
+            top_k_docs (int): Final number of unique papers to return.
+            candidate_chunks (int): Number of raw chunks to fetch before aggregation. 
+                                    Set higher (e.g., 1000) to improve recall.
+
+        Returns:
+            List[Dict]: Ranked list of recommended papers with scores and metadata.
+
+        Raises:
+            ValueError: If the input titles cannot be mapped to any known documents.
         """
         # 1) titles -> doc_idx
         doc_indices = []
@@ -439,6 +681,26 @@ class IndexResources:
                                top_k: int,
                                baseline_mode: str = "cold",
                                ef_search: int | None = None):
+        """
+        Unified dispatcher for executing vector searches across different backends.
+
+        Acts as a **Facade** that abstracts away the specific implementation details 
+        (FAISS Flat vs HNSW vs NumPy Baseline) and normalizes their outputs.
+
+        Args:
+            query_vec (np.ndarray): The query vector.
+            backend (str): Strategy selector ('faiss_flat', 'faiss_hnsw', 'baseline').
+            top_k (int): Number of results.
+            baseline_mode (str): 'cold' (disk IO) or 'hot' (memory) for baseline benchmarking.
+            ef_search (int | None): Hyperparameter for HNSW search depth.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (scores, indices) - ignoring telemetry data.
+
+        Raises:
+            RuntimeError: If the index is empty.
+            ValueError: If an unknown backend string is provided.
+        """
         total_chunks = len(self.metadata)
         if total_chunks <= 0:
             raise RuntimeError("No chunks in index.")
@@ -464,10 +726,28 @@ class IndexResources:
                              exclude_docs: Optional[Set[int]] = None,
                              top_k_docs: int = 10) -> List[Dict]:
         """
-        將 chunk-level 結果聚合成 doc-level：
-          - 每篇 doc 的分數 = 該 doc 所有 chunk 分數的最大值
-          - exclude_docs: 需要排除的 doc_idx（例如使用者偏好 seed）
-        回傳: [{'doc_idx', 'score', 'title'}, ...]，已排序取前 top_k_docs
+        Aggregates chunk-level retrieval scores into document-level rankings.
+
+        **Aggregation Strategy: Max Pooling**
+        This method assumes that a document's relevance is determined by its *most relevant* segment. It iterates through the retrieved chunks, grouping them by Document ID, 
+        and assigns the document a score equal to the maximum score of its constituent chunks.
+
+        This approach effectively surfaces papers that contain specific, highly relevant 
+        details, even if the rest of the paper is unrelated.
+
+        Args:
+            scores (np.ndarray): Similarity scores from the vector search engine.
+            idx (np.ndarray): Corresponding chunk indices (row IDs).
+            exclude_docs (Optional[Set[int]]): A set of Document IDs to filter out. 
+                                               (e.g., used to exclude the "Seed Papers" 
+                                               in recommendation tasks to ensure novelty).
+            top_k_docs (int): The final number of unique documents to return.
+
+        Returns:
+            List[Dict]: A ranked list of document objects, each containing:
+                - `doc_idx`: The internal document ID.
+                - `score`: The aggregated relevance score (max pooling).
+                - `title`: The document title.
         """
         if exclude_docs is None:
             exclude_docs = set()

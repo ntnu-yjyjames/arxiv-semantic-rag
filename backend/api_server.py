@@ -12,61 +12,52 @@ from rag_llama import generate_rag_answer
 
 
 
-app = FastAPI(title="ArXiv FAISS vs Baseline vs HNSW Search")
+
 app = FastAPI(title="ArXiv FAISS vs Baseline vs HNSW Search + RAG")
 
 logger = logging.getLogger("uvicorn.error")
 
-
-'''@app.on_event("startup")
-def preload_resources():
-    """
-    伺服器啟動時就先載入：
-      - 索引 (FAISS / Zarr / metadata)
-      - LLM 模型 (HF / llama-cpp)
-    這樣第一個 HTTP 請求不會卡很久。
-    """
-    try:
-        # 如果你有多個 corpus，可以指定一個預設，如 "transformer"
-        res = get_index_resources()  # 或 get_index_resources("transformer")
-        logger.info("[STARTUP] Index loaded. chunks=%d docs=%d",
-                    len(res.metadata), len(res.doc2rows))
-
-        # 載入 HF 模型
-        tokenizer, model = get_hf_model()
-        #tokenizer, model = get_llm()
-        device = next(model.parameters()).device
-        logger.info("[STARTUP] HF model loaded on device: %s", device)
-
-    except Exception as e:
-        logger.error("[STARTUP] Failed to preload resources: %r", e)
-        traceback.print_exc()
-        # 這裡你可以選擇直接 raise 讓 uvicorn 啟動失敗
-        raise
-@app.on_event("startup")
-def preload_resources():
-    try:
-        res = get_index_resources()
-        logger.info("[STARTUP] Index loaded. chunks=%d docs=%d",
-                    len(res.metadata), len(res.doc2rows))
-
-        llm = get_llm()   # 這裡原本如果是 tokenizer, model = get_llm() 就要改掉
-        logger.info("[STARTUP] GGUF model loaded.")
-
-    except Exception as e:
-        logger.error("[STARTUP] Failed to preload resources: %r", e)
-        traceback.print_exc()
-        raise'''
-
-
 @app.get("/titles", response_model=List[str])
 def get_titles(limit: int = 50):
+    """
+    Retrieves a sample of paper titles from the dataset.
+    
+    This endpoint serves as a helper for the frontend UI, allowing users 
+    to select papers to form their interest vector (query vector) without 
+    needing to type specific queries.
+
+    Args:
+        limit (int): The maximum number of titles to return. Defaults to 50.
+
+    Returns:
+        List[str]: A list of paper titles available in the index.
+    """
     res = get_index_resources()
     return res.list_some_titles(limit=limit)
 
 
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
+    """
+    Executes a semantic vector search using the specified backend strategy.
+
+    Logic Flow:
+    1. **Vectorization**: Aggregates selected paper titles into a single "user interest" vector.
+    2. **Retrieval**: Dispatches the query to one of three engines:
+        - `baseline`: NumPy full-scan (in-memory matrix multiply, exact).
+        - `faiss_flat`: Brute-force search via FAISS Flat (CPU, exact).
+        - `faiss_hnsw`: Approximate nearest neighbor graph search (low latency, scalable).
+    3. **Telemetry**: Captures end-to-end execution time and memory deltas for the request.
+
+    Args:
+        req (SearchRequest): Contains the user's selected titles and backend configuration.
+
+    Returns:
+        SearchResponse: Search results (titles, passages) augmented with performance metrics.
+    
+    Raises:
+        HTTPException(400): If the title list is empty or contains unknown titles.
+    """
     if not req.titles:
         raise HTTPException(status_code=400, detail="titles cannot be empty")
 
@@ -108,6 +99,26 @@ def search(req: SearchRequest):
 
 @app.post("/benchmark", response_model=BenchmarkResponse)
 def benchmark(req: BenchmarkRequest):
+    """
+    Runs a comparative performance analysis across all available search backends.
+
+    This endpoint executes the same "user interest" vector against:
+    1. **Baseline** (NumPy exact full-scan)
+    2. **FAISS Flat** (CPU exact)
+    3. **FAISS HNSW** (approximate ANN)
+
+    It aggregates key metrics (e.g., latency, memory delta, recall@k) to generate
+    performance reports for the frontend dashboard.
+
+    Args:
+        req (BenchmarkRequest): User-provided titles and top-k configuration.
+
+    Returns:
+        BenchmarkResponse: A structured report comparing metrics across backends.
+    
+    Raises:
+        HTTPException(400): If input titles are invalid.
+    """
     if not req.titles:
         raise HTTPException(status_code=400, detail="titles cannot be empty")
 
@@ -124,6 +135,26 @@ def benchmark(req: BenchmarkRequest):
 
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend(req: RecommendRequest):
+    """
+    Generates paper-level recommendations based on semantic similarity.
+
+    Unlike the raw `/search` endpoint which returns individual passages, this endpoint:
+    1. Retrieves a large pool of candidate passages (e.g., top 1000 chunks).
+    2. Groups passages by their parent document (doc_idx).
+    3. Scores each document based on the best (maximum) passage similarity.
+    4. Returns the top unique papers ranked by this document score.
+
+    Args:
+        req (RecommendRequest): Includes `backend` choice and `top_k_docs` limit.
+
+    Returns:
+        RecommendResponse: A list of recommended papers with their doc indices, titles, and scores.
+
+    Raises:
+        HTTPException(400): If input titles are invalid.
+        HTTPException(500): For unexpected internal aggregation errors.
+    """
+
     if not req.titles:
         raise HTTPException(status_code=400, detail="titles cannot be empty")
 
@@ -152,6 +183,27 @@ def recommend(req: RecommendRequest):
 
 @app.post("/rag-answer", response_model=RagResponse)
 def rag_answer(req: RagRequest):
+    """
+    Orchestrates the complete Retrieval-Augmented Generation (RAG) pipeline.
+
+    This endpoint transforms a user question into a grounded answer using a two-stage process:
+    1. **Retrieval Phase**: Embeds the question and performs a semantic search (HNSW/Flat) 
+       to fetch the top-k most relevant text chunks from the arXiv corpus.
+    2. **Generation Phase**: Constructs a prompt using the retrieved chunks as "context" 
+       and instructs the LLM to answer the question based *solely* on this context.
+
+    Args:
+        req (RagRequest): Contains the user question, top_k limits, and max_token constraints.
+
+    Returns:
+        RagResponse: 
+            - `answer`: The synthesized response from the LLM.
+            - `contexts`: The raw text chunks used as evidence (crucial for citation/verification).
+
+    Raises:
+        HTTPException(400): If the question is empty.
+        HTTPException(500): For retrieval or generation failures (logged separately).
+    """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question cannot be empty")
 
@@ -164,8 +216,7 @@ def rag_answer(req: RagRequest):
         raise HTTPException(status_code=500, detail=f"retrieval failed: {e}")
 
     try:
-        # 這裡不必再擔心首次載入時間，get_hf_model 已經在 startup 跑過
-        #_tok, _model = get_hf_model()  # 這行可以保留或乾脆不用回傳值，反正是 singleton
+        
         answer = generate_rag_answer(
             question=req.question,
             chunks=chunks,

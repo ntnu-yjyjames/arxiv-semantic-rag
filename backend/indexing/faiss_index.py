@@ -11,6 +11,20 @@ from .config import CHUNK_SIZE, HNSW_M, HNSW_EF_CONSTRUCTION, HNSW_EF_SEARCH
 
 
 def build_flat_index(emb_store: zarr.Array, dim: int) -> faiss.IndexFlatIP:
+    """
+    Constructs a brute-force FAISS index for exact nearest neighbor search.
+
+    This function iterates through the on-disk Zarr array in chunks to minimize 
+    RAM usage during index construction.
+
+    Args:
+        emb_store (zarr.Array): The Zarr array containing pre-computed embeddings.
+        dim (int): Dimensionality of the vectors (e.g., 384).
+
+    Returns:
+        faiss.IndexFlatIP: A populated Flat index using Inner Product metric.
+                           (Equivalent to Cosine Similarity if vectors are normalized).
+    """
     print("[INFO] Building FAISS IndexFlatIP (flat, CPU)...")
     index = faiss.IndexFlatIP(dim)
     n = emb_store.shape[0]
@@ -23,6 +37,21 @@ def build_flat_index(emb_store: zarr.Array, dim: int) -> faiss.IndexFlatIP:
 
 
 def build_hnsw_index(emb_store: zarr.Array, dim: int) -> faiss.IndexHNSWFlat:
+    """
+    Builds a Hierarchical Navigable Small World (HNSW) index for fast approximate search.
+
+    Algorithm Details:
+    - Uses HNSW graph structure to achieve logarithmic time complexity O(log N).
+    - Configured with `M={HNSW_M}` and `efConstruction={HNSW_EF_CONSTRUCTION}` from config.
+    - Loads data incrementally from Zarr to handle large datasets efficiently.
+
+    Args:
+        emb_store (zarr.Array): Source embeddings on disk.
+        dim (int): Vector dimension.
+
+    Returns:
+        faiss.IndexHNSWFlat: The optimized HNSW index ready for high-speed retrieval.
+    """
     print("[INFO] Building FAISS HNSW index...")
     index_hnsw = faiss.IndexHNSWFlat(dim, HNSW_M, faiss.METRIC_INNER_PRODUCT)
     index_hnsw.hnsw.efConstruction = HNSW_EF_CONSTRUCTION
@@ -37,10 +66,29 @@ def build_hnsw_index(emb_store: zarr.Array, dim: int) -> faiss.IndexHNSWFlat:
     print(f"[INFO] HNSW index total vectors = {index_hnsw.ntotal}")
     return index_hnsw
 
-
+'''
 def search_flat(index: faiss.IndexFlatIP,
                 query_vec: np.ndarray,
                 top_k: int = 10) -> Tuple[np.ndarray, np.ndarray, float, float, float]:
+    """
+    Executes exact search while capturing latency and memory telemetry.
+
+    This function is instrumented with `psutil` to detect memory spikes (RSS delta)
+    during the search operation, providing data for performance benchmarking.
+
+    Args:
+        index (faiss.IndexFlatIP): The baseline exact search index.
+        query_vec (np.ndarray): Input query vector.
+        top_k (int): Top-K results.
+
+    Returns:
+        Tuple containing:
+        1. Result Scores (cosine similarity if normalized)
+        2. Result Indices (row indices into the embedding / metadata arrays)
+        3. Latency (seconds)
+        4. Memory Footprint (MB)
+        5. Memory Spike/Delta (MB)
+    """
     proc = psutil.Process(os.getpid())
     rss_before = proc.memory_info().rss
 
@@ -60,6 +108,23 @@ def search_flat(index: faiss.IndexFlatIP,
 def search_baseline(emb_store: zarr.Array,
                     query_vec: np.ndarray,
                     top_k: int = 10) -> Tuple[np.ndarray, np.ndarray, float, float, float]:
+    """
+    Executes a naive NumPy-based exact search to serve as a performance baseline.
+
+    ⚠️ Engineering Note:
+    This implementation forces a full data load (`emb_store[:]`) into RAM, causing 
+    significant memory spikes. It is used solely for benchmarking to demonstrate 
+    the necessity of vector databases (like FAISS) for handling large-scale datasets.
+
+    Args:
+        emb_store (zarr.Array): Source embeddings (will be fully loaded into RAM).
+        query_vec (np.ndarray): Query vector.
+        top_k (int): Top-K count.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, float, float, float]: 
+            Returns search results and telemetry data (latency, memory usage).
+    """
     proc = psutil.Process(os.getpid())
     rss_before = proc.memory_info().rss
 
@@ -82,3 +147,4 @@ def search_baseline(emb_store: zarr.Array,
     delta_mb = (rss_after - rss_before) / 1e6
 
     return scores, idx.astype(int), elapsed, rss_mb, delta_mb
+'''

@@ -8,3 +8,7 @@ backend/get_efsearch_data.py
 backend/rag_hf.py
 backend/usage.md
 backend/test_latency.py
+backend/api_for_hfmodel.py
+backend/bench_index_size.py
+backend/build_benchmark_result/
+backend/arxiv_data

@@ -2,10 +2,30 @@
 from typing import List, Dict
 import ollama
 
-OLLAMA_MODEL = "llama3.1:8b"  # 或 "llama3.1-q5km-local" 如果你建立了自訂模型
+OLLAMA_MODEL = "llama3.1:8b"  
 
 
 def build_context_from_chunks(chunks: List[Dict], max_chars: int = 3000) -> str:
+    """
+    Constructs a structured context string from retrieved chunks for the LLM prompt.
+
+    This function formats raw retrieval results into a readable "Context Block" with 
+    explicit citation markers (Title, Section). It implements a hard character limit 
+    to ensure the resulting prompt fits within the LLM's context window.
+
+    Format per chunk:
+    [DOC {id}] [SECTION: {name}]
+    TITLE: {title}
+    CONTENT: {text}
+
+    Args:
+        chunks (List[Dict]): The top-k retrieval results.
+        max_chars (int): It applies a hard **character** limit to keep the assembled context within
+                         a safe range for the LLM's context window (character-based proxy for token length).
+
+    Returns:
+        str: A single aggregated string ready for injection into the system prompt.
+    """
     parts = []
     total_len = 0
     for c in chunks:
@@ -27,7 +47,21 @@ def generate_rag_answer(
     temperature: float = 0.2,
 ) -> str:
     """
-    用 Ollama 上的 Llama3.1 8B 模型 + RAG context 回答問題。
+    Synthesizes a grounded answer using a local LLM (Llama 3.1 via Ollama).
+
+    This function constructs a system prompt that instructs the LLM to
+    answer based only on the provided context (grounding) and to explicitly
+    admit uncertainty if the context is insufficient. This helps to minimize
+    unsupported hallucinations.
+
+    Args:
+        question (str): The user's natural language query.
+        chunks (List[Dict]): Retrieved context chunks acting as the knowledge source.
+        max_tokens (int): Approximate upper bound on the generated response length (in tokens).
+        temperature (float): Controls randomness (lower values produce more focused, less random outputs).
+
+    Returns:
+        str: The generated answer text.
     """
     context = build_context_from_chunks(chunks)
 

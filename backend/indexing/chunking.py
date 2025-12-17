@@ -8,6 +8,21 @@ from .config import SECTION_TITLES, SENTENCE_ENDINGS, FULLTEXT_CANDIDATES, DEFAU
 
 
 def split_into_sections(text: str) -> List[Tuple[str, str]]:
+    """
+    Parse the raw text and segment it into logical sections based on simple
+    arXiv-style headings (e.g., 'Abstract', 'Introduction', 'Methods', ...).
+
+    Args:
+        text (str): Raw string content of the paper (e.g., extracted from PDF or LaTeX).
+
+    Returns:
+        List[Tuple[str, str]]: A list of (section_label, section_text) pairs where:
+            - section_label: a normalized, lowercased section name
+              (e.g. "abstract", "introduction", "methods", "body", "preamble").
+            - section_text: the substring of the original text corresponding to that
+              section, starting from the detected heading line (i.e., it usually
+              **includes** the section header line).
+    """
     if not text or not isinstance(text, str):
         return []
 
@@ -40,6 +55,19 @@ def split_into_sections(text: str) -> List[Tuple[str, str]]:
 
 
 def find_last_sentence_boundary(chunk: str) -> int:
+    """
+    Finds the safe cutting point to prevent splitting a sentence in the middle.
+
+    Used during chunking to identify the last complete sentence boundary within 
+    the character limit. This ensures semantic integrity by keeping sentences intact.
+
+    Args:
+        chunk (str): The candidate text chunk.
+
+    Returns:
+        int: The index of the last punctuation (., ?, !).
+             Returns -1 if the chunk contains no sentence endings (implies a hard cut is needed).
+    """
     last_pos = -1
     for end in SENTENCE_ENDINGS:
         pos = chunk.rfind(end)
@@ -51,6 +79,21 @@ def find_last_sentence_boundary(chunk: str) -> int:
 def chunk_text_by_length(text: str,
                          max_chars: int = DEFAULT_MAX_CHARS_PER_CHUNK
                          ) -> List[str]:
+    """
+    Chunks text by length with a "soft truncation" strategy to preserve sentence integrity.
+
+    The function attempts to break at the last sentence-ending punctuation within the 
+    window. If no suitable boundary is found, or if the resulting chunk is too short 
+    (< 30% of max_chars), it falls back to a hard cut at `max_chars`.
+
+    Args:
+        text (str): The input text string.
+        max_chars (int): Maximum characters per chunk.
+
+    Returns:
+        List[str]: A list of processed chunks suitable for embedding models.
+    """
+    # ...
     text = text.strip()
     if len(text) <= max_chars:
         return [text]
@@ -83,6 +126,24 @@ def chunk_text_by_length(text: str,
 def build_chunks_from_df(df: pd.DataFrame,
                          max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK
                          ) -> Tuple[List[str], List[Dict]]:
+    """
+    Transforms raw document data into semantically enriched chunks for the RAG pipeline.
+
+    Key Features:
+    - **Hybrid Chunking:** Combines semantic section splitting with hard length constraints.
+    - **Context Injection:** Prepends "{Title}\n[SECTION: {Name}]" to every chunk to preserve global context.
+    - **Graceful Fallback:** Automatically detects if full-text is missing and defaults to processing the abstract.
+
+    Args:
+        df (pd.DataFrame): Source data containing paper metadata and content.
+        max_chars_per_chunk (int): Maximum number of **characters** allowed per chunk (a rough safety limit for downstream token length).
+
+    Returns:
+        Tuple[List[str], List[Dict]]: 
+            `chunk_texts`: each string has the form "{title}\\n[SECTION: {section_name}]\\n{chunk_text}".
+            `chunk_metadata`: per-chunk metadata including doc_idx, id, title, categories,
+                                section, chunk_index, chunk_text, and a short preview.
+    """
     fulltext_col: Optional[str] = None
     for c in FULLTEXT_CANDIDATES:
         if c in df.columns:

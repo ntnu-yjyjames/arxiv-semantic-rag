@@ -113,15 +113,51 @@ We conducted an ablation study on the HNSW `efSearch` parameter to find the opti
 
 ---
 
-## 4. Note on Exact Search (NumPy vs. FAISS Flat)
+## 4. Resource Footprint & Capacity Planning (Full Dataset)
 
-Interestingly, benchmarks show that **NumPy (~218 ms)** outperforms
-**FAISS Flat (~1.2 s)** for CPU-based exact search on this dataset.
+Beyond latency, we analyzed the storage and memory footprint of the system to
+estimate hardware requirements for production deployment on the full dataset.
 
-* **Analysis:** NumPy benefits from highly optimized BLAS/MKL vectorization
-  for dense matrix operations, whereas FAISS Flat introduces additional
-  abstraction overhead on CPU.
+| Component | Size (MB) | Description |
+| :--- | :--- | :--- |
+| **Index (Exact / Flat)** | 4,252.52 | Raw FAISS Flat index (baseline exact-search storage). |
+| **Index (HNSW)** | 5,005.97 | Active ANN search index including graph edges. |
+| **Embeddings** | 3,992.72 | Zarr-backed dense vector storage. |
+| **Metadata** | 3,989.13 | JSONL mappings (titles, abstracts, IDs). |
+| **Total Footprint** | **17,240.34** | Total persistent system state. |
+
+### Engineering Insights: Space–Time Trade-off
+
+1. **Moderate Storage Overhead for ANN Indexing (+17.7%):**
+   * Migrating from a Flat index to HNSW increases index storage by
+     **~753 MB**, corresponding to **~17.7%** additional space relative to
+     the exact-search baseline.
+   * **Interpretation:** This modest storage overhead enables a
+     **~32× system-level speedup** under full-dataset cold-start conditions,
+     representing a practical space–time trade-off for production systems.
+
+2. **Capacity Planning Implications:**
+   * The total persistent system state occupies approximately **17.2 GB**.
+   * **Deployment Strategy:** To guarantee fully in-memory operation and
+     avoid disk-induced latency, a production environment should provision
+     at least **32 GB of RAM**, leaving headroom for the OS, application
+     runtime, and concurrent query processing.
+   * **Optimization Path:** In memory-constrained environments, the
+     `embeddings.zarr` and `metadata.jsonl` layers can be memory-mapped
+     (mmap), keeping only the HNSW index (~5 GB) resident in RAM while
+     preserving acceptable performance.
+
+---
+
+## 5. Appendix: Note on Exact Search (NumPy vs. FAISS Flat)
+
+Benchmarks show that **NumPy (~218 ms)** outperforms **FAISS Flat (~1.2 s)** for
+CPU-based exact search on this dataset.
+
+* **Analysis:** NumPy benefits from highly optimized BLAS/MKL vectorization for
+  dense matrix operations, whereas FAISS Flat introduces additional abstraction
+  overhead in CPU-only settings.
 * **Conclusion:** Despite this advantage, exact search scales linearly and
-  remains impractical at production scale. Transitioning to **HNSW-based
+  becomes impractical at production scale. Transitioning to **HNSW-based
   approximate search** provides the necessary order-of-magnitude improvements
-  in both latency and memory stability.
+  in latency and memory stability for large-scale retrieval systems.
