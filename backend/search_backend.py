@@ -15,10 +15,10 @@ import zarr
 from sentence_transformers import SentenceTransformer
 from arxiv_faiss_zarr.config import EMBED_MODEL_NAME
 
-#INDEX_DIR = "./arxiv_zarr/arxiv_index_demo_transformer"  
+# Use your own data path(with FAISS/ZARR index)
 INDEX_DIR = "./arxiv_zarr/arxiv_index_full"  
 
-# 與 build 時一致
+# Aligned with building parameters
 HNSW_EF_SEARCH = 64
 
 
