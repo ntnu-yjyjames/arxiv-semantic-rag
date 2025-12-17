@@ -3,10 +3,25 @@
 This document details the benchmarking methodology, results, and engineering trade-offs for the vector retrieval system. We compare **Exact Search (NumPy, FAISS Flat)** against **Approximate Nearest Neighbors (FAISS HNSW)** across varying dataset sizes and system states.
 
 ## Benchmark Environment
+
 * **Dataset:** **arxiv_cornell_title_abstract**
-    > All experiments in this project are conducted on the **arxiv_cornell_title_abstract** dataset, which contains titles and abstracts from a curated subset of arXiv papers. This dataset is commonly used for semantic retrieval and recommendation research and provides a realistic workload for evaluating vector search systems without requiring full-text processing.
-* **Dimensions:** 768 (using sentence-transformers embeddings)
-* **Metrics:** End-to-end Latency (ms), Memory Usage (MB), and Recall@k (ground truth: NumPy full scan).
+  > All experiments are conducted on a corpus derived from the official
+  **arXiv metadata snapshot** released by Cornell University
+  (`arxiv-metadata-oai-snapshot.json`). A custom preprocessing pipeline was
+  implemented to extract titles and abstracts, normalize text fields, and
+  export the resulting dataset into a structured CSV format
+  (**arxiv_cornell_title_abstract.csv**). 
+
+  >  
+  > This abstract-level corpus provides a realistic workload for evaluating
+  semantic retrieval systems while isolating retrieval behavior from
+  full-text ingestion costs.
+
+* **Embedding Dimension:** 768 (sentence-transformers)
+
+* **Metrics:** End-to-end latency (ms), per-query memory allocation (MB),
+  and Recall@k (ground truth: NumPy brute-force full scan).
+
 
 ---
 ## 1. Scalability: The Memory Wall at Scale
@@ -35,26 +50,39 @@ dataset (≈2.9M documents)** to assess scalability.
 
 ---
 
-## 2. System Stability: Cold Start Latency
+## 2. System Stability: Cold Start Latency (Full Dataset)
 
 To simulate a real-world production environment (e.g., stateless workers or
-serverless functions), we measured performance under **cold start** conditions
-on a representative **5k-document subset**, where memory caches are flushed
-prior to each query.
+serverless functions), we evaluated **cold-start performance on the full
+arxiv_cornell_title_abstract dataset (≈2.9M documents)**. All memory caches were
+flushed prior to each query to expose initialization and allocation overheads.
 
-<img src="backend/bench_images/cold_start_benchmark.png" width="850" alt="Cold Start System Latency"/>
+<img src="backend/bench_images/full_cold_start_benchmark.png" width="850" alt="Full Dataset Cold Start System Latency"/>
 
 ### Key Observations
-* **Initialization Overhead:** Under cold start, the NumPy baseline exhibits
-  significant initialization and allocation overhead, resulting in a latency
-  spike of **73.7 ms** even on a small corpus.
-* **System Speedup (~250×):** FAISS HNSW minimizes this overhead by operating on
-  pre-built, memory-resident index structures, reducing cold-start latency to
-  **0.29 ms**—a **~250× system-level improvement**.
 
-**Note:** While full-corpus cold-start behavior is even more pronounced due to
-larger memory footprints, this experiment isolates the system-level effect
-independent of corpus scale.
+* **Severe Initialization Overhead in Exact Search:** Under cold-start conditions,
+  both NumPy and FAISS Flat exhibit extreme latency spikes due to full-scan
+  computation and large temporary memory allocations. NumPy requires
+  **~10.15 s**, while FAISS Flat takes **~6.86 s** for a single query on the
+  full dataset.
+
+* **System Stability with HNSW (~32× Speedup):** FAISS HNSW minimizes cold-start
+  overhead by operating on a pre-built, memory-resident graph structure.
+  Cold-start latency is reduced to **~316 ms**, yielding a **~32× system-level
+  speedup** over NumPy while using **two orders of magnitude less memory**
+  (~12.9 MB vs. >3.5 GB).
+
+* **Memory Footprint as the Dominant Bottleneck:** The large memory allocations
+  incurred by exact search approaches make them unsuitable for stateless or
+  concurrent serving scenarios. In contrast, HNSW’s bounded memory usage
+  enables predictable latency and stable behavior at scale.
+
+**Insight:** While cold-start latency is often overlooked in algorithmic
+benchmarks, it becomes a first-order constraint in production ML systems.
+Graph-based ANN indices such as HNSW provide not only algorithmic acceleration
+but also **system-level stability** under realistic deployment conditions.
+
 
 ---
 

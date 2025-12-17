@@ -68,17 +68,31 @@ It is intended to be both:
 
 ## Dataset
 
-All experiments in this project are conducted on the **arxiv_cornell_title_abstract**
-dataset, which contains titles and abstracts from a curated subset of arXiv papers.
-This dataset is commonly used for semantic retrieval and recommendation research
-and provides a realistic workload for evaluating vector search systems without
-requiring full-text processing.
+All experiments in this project are conducted on a dataset derived from the
+**arXiv metadata snapshot** released by Cornell University
+(`arxiv-metadata-oai-snapshot.json`).
 
-While the corpus size is smaller than the complete arXiv dump, it is sufficient to
-expose system-level behaviors such as cold-start latency, memory allocation
-patterns, ANN parameter sensitivity, and scalability trends. The benchmarking
-focus of this project is on **retrieval-system trade-offs**, rather than absolute
-throughput at maximum corpus scale.
+Starting from the official metadata dump, I implemented a custom preprocessing
+pipeline to extract titles and abstracts, normalize text fields, and export the
+resulting corpus into a structured CSV format
+(**arxiv_cornell_title_abstract.csv**). The preprocessing logic is fully
+reproducible and implemented in:
+    - `utils/json2csv.py`
+
+Official dataset source:
+https://www.kaggle.com/datasets/Cornell-University/arxiv
+
+While this dataset represents only a subset of the full arXiv content (titles
+and abstracts rather than full text), it provides a realistic and widely used
+workload for evaluating semantic retrieval and recommendation systems. The
+corpus scale is sufficient to expose system-level behaviors such as cold-start
+latency, memory allocation patterns, ANN parameter sensitivity, and scalability
+trends.
+
+The primary focus of this project is **retrieval-system trade-offs**—including
+latency, memory stability, and recall—rather than absolute throughput on
+full-text corpora.
+
 
 ## Performance Benchmarks & System Analysis
 
