@@ -4,6 +4,8 @@ import requests
 import streamlit as st
 import pandas as pd
 import altair as alt
+
+from utils.fetch_titles import fetch_titles
 BACKEND_URL = "http://localhost:8000"
 
 st.set_page_config(
@@ -12,17 +14,27 @@ st.set_page_config(
 )
 
 
-def fetch_titles(limit: int = 100):
-    try:
-        resp = requests.get(f"{BACKEND_URL}/titles", params={"limit": limit})
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        st.error(f"Failed to fetch titles from backend: {e}")
-        return []
+
 
 
 def run_benchmark(titles, top_k: int):
+    """
+    Trigger the comparative benchmark analysis on the backend.
+
+    This function sends the seed titles to the `/benchmark` endpoint, which
+    runs the same query against multiple backends (Baseline, FAISS Flat,
+    FAISS HNSW) and returns their aggregated metrics.
+
+    Args:
+        titles (List[str]): Selected paper titles used to construct the user vector.
+        top_k (int): The 'K' in Recall@K and top-k retrieval.
+
+    Returns:
+        dict: Parsed JSON response containing a `backends` list, where each item has:
+            - `backend`: backend name
+            - `elapsed_ms`, `memory_rss_mb`, `memory_delta_mb`, `recall_at_k`
+            - `results`: hydrated top-k passages for that backend
+    """
     payload = {
         "titles": titles,
         "top_k": top_k,
@@ -33,6 +45,41 @@ def run_benchmark(titles, top_k: int):
 
 
 def main():
+    """
+    Entry point for the "System Performance Benchmark" dashboard.
+
+    This page serves as a comprehensive evaluation suite for the vector search
+    subsystem, combining live interactive profiling with pre-computed scalability
+    experiments. The goal is to justify architectural choices through empirical data.
+
+    **Dashboard Architecture:**
+
+    1. **Live Search Benchmark (Interactive):**
+       - **Objective:** Evaluate real-time trade-offs between accuracy and resource
+         consumption on specific user queries.
+       - **Comparison:** `Baseline` (exact ground truth, NumPy full-scan) vs.
+         `FAISS Flat` (optimized exact, cosine / inner product) vs.
+         `FAISS HNSW` (graph-based ANN).
+       - **Key Metrics:**
+         - `Recall@K`: approximation error relative to the exact baseline.
+         - `Latency`: end-to-end retrieval time (ms).
+         - `Extra Memory`: per-query RSS delta.
+
+    2. **HNSW Hyperparameter Ablation (Static Analysis):**
+       - **Objective:** Determine a reasonable `efSearch` configuration for production.
+       - **Methodology:** Sweep `efSearch` from 16 to 256 and plot the latency–recall
+         trade-off (Pareto frontier).
+       - **Insight:** Highlights a "knee point" (e.g. around `efSearch=64`) where
+         marginal recall gains no longer justify the additional latency.
+
+    3. **Build-time Scalability Analysis (Hardware Benchmarking):**
+       - **Objective:** Assess the impact of GPU-accelerated embeddings on index
+         construction time as the corpus grows.
+       - **Methodology:** Measure end-to-end build times (embedding + FAISS index
+         build on CPU) for different corpus sizes (e.g. N=1k to N=50k).
+       - **Insight:** Shows the asymptotic speedup from CUDA acceleration on the
+         embedding stage and motivates the use of GPU for large-scale RAG.
+    """
     st.title("FAISS Flat vs HNSW vs Baseline：Latency / Memory / Recall Benchmark")
 
     st.markdown(
@@ -180,15 +227,14 @@ def main():
     )
 
     
-    '''hnsw_stats = {
+    hnsw_stats = {
         16:  {"latency_ms": 0.20, "recall": 0.9830},
         32:  {"latency_ms": 0.21, "recall": 0.9925},
         64:  {"latency_ms": 0.26, "recall": 0.9965},
         128: {"latency_ms": 0.36, "recall": 0.9995},
         256: {"latency_ms": 0.58, "recall": 1.0000},
     }#'''
-    hnsw_stats = {8: {"latency_ms": 2.58, "recall": 0.8695}, 16: {"latency_ms": 2.31, "recall": 0.9412}, 32: {"latency_ms": 2.75, "recall": 0.975}, 64: {"latency_ms": 3.59, "recall": 0.9877}, 128: {"latency_ms": 4.86, "recall": 0.9982}, 256: {"latency_ms": 7.42, "recall": 0.9992}, 512: {"latency_ms": 12.55, "recall": 0.9992}, 1024: {"latency_ms": 21.49, "recall": 0.9995}}
-
+    
     rows = []
     for ef, v in hnsw_stats.items():
         rows.append({"efSearch": ef, "latency_ms": v["latency_ms"], "recall": v["recall"]})
@@ -209,8 +255,8 @@ def main():
             y=alt.Y(
                 "latency_ms:Q",
                 title="Latency (ms)",
-                #scale=alt.Scale(domain=[0.15, 0.65]),
-                scale=alt.Scale(domain=[2.00, 22.0]), 
+                scale=alt.Scale(domain=[0.15, 0.65]),
+                #scale=alt.Scale(domain=[2.00, 22.0]), 
             ),
             tooltip=[
                 alt.Tooltip("efSearch", title="efSearch"),
@@ -252,8 +298,8 @@ def main():
                 "recall:Q",
                 title="Recall@10 (Relative to Flat)",
                 
-                #scale=alt.Scale(domain=[0.98, 1.0005]),
-                scale=alt.Scale(domain=[0.85, 1.0005]), 
+                scale=alt.Scale(domain=[0.98, 1.0005]),
+                #scale=alt.Scale(domain=[0.85, 1.0005]), 
             ),
             tooltip=[
                 alt.Tooltip("efSearch", title="efSearch"),

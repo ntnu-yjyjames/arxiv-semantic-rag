@@ -19,6 +19,30 @@ st.set_page_config(
 
 
 def main():
+    """
+    RAG Inference Workbench: a configurable environment for retrieval-augmented QA.
+
+    This page serves as the engineering interface for the Retrieval-Augmented Generation
+    (RAG) pipeline. It follows a "glass box" approach, allowing researchers to tune
+    retrieval / generation hyperparameters and inspect the evidence used for answers.
+
+    **Key Features:**
+    1. **Query Input:** Supports both manual entry and pre-defined demo questions to
+       quickly test domain-specific knowledge.
+    2. **Parameter Tuning:** Exposes
+       - `top_k` (retrieval depth; number of context passages to fetch), and
+       - `max_tokens` (maximum generation length)
+       for real-time prompt / RAG behavior experiments.
+    3. **Evidence Visualization:** Renders the retrieved contexts (source chunks) below
+       the answer, which is critical for checking hallucination vs. grounding.
+
+    **Backend Interaction:**
+        - POST `{BACKEND_URL}/rag-answer`
+          The backend:
+            1) encodes the question and performs vector search over arXiv passages, and
+            2) calls a local LLM (e.g., Llama 3.1 8B via Ollama) with the retrieved
+               passages injected as context to generate the final answer.
+    """
     st.title("Chat with arXiv (RAG)")
 
     st.markdown(

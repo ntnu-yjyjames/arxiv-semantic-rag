@@ -24,15 +24,55 @@ HNSW_EF_SEARCH = 64
 
 
 def l2_normalize(x: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    """
+    L2-normalize an array along the last dimension.
+
+    Args:
+        x (np.ndarray): Input array of shape (..., dim).
+        eps (float): Small constant to avoid division by zero.
+
+    Returns:
+        np.ndarray: Same shape as `x`, with each vector on the last axis normalized
+                    to unit length (||v||_2 ~= 1).
+    """
     return x / (np.linalg.norm(x, axis=-1, keepdims=True) + eps)
 
 
 def _load_metadata(meta_path: str) -> List[Dict[str, Any]]:
+    """
+    Load chunk-level metadata from a JSON Lines (.jsonl) file.
+
+    Each line in the file is expected to be a standalone JSON object describing
+    one chunk (doc_idx, title, section, chunk_index, previews, etc.).
+
+    Args:
+        meta_path (str): Path to the metadata.jsonl file.
+
+    Returns:
+        List[Dict[str, Any]]: List of metadata dictionaries in file order
+                              (index-aligned with the embedding matrix).
+    """
     metadata = []
     with open(meta_path, "r", encoding="utf-8") as f:
         for line in f:
             metadata.append(json.loads(line))
     return metadata
+
+import re
+
+def _normalize_title(text: str) -> str:
+    """
+    Normalize a title string for matching:
+    - collapse all whitespace (spaces, tabs, newlines) into single spaces
+    - strip leading/trailing whitespace
+    - lowercase for case-insensitive matching
+    """
+    if not isinstance(text, str):
+        return ""
+    # 將 \n、\t、多個空白 等全部壓成一個空白
+    normalized = re.sub(r"\s+", " ", text)
+    return normalized.strip().lower()
+
 
 
 class IndexResources:
@@ -111,13 +151,17 @@ class IndexResources:
         # 用於 baseline mode="hot" 的 in-memory embeddings
         self._emb_hot: np.ndarray | None = None
 
+
         for row_idx, m in enumerate(self.metadata):
             doc_idx = int(m["doc_idx"])
             self.doc2rows[doc_idx].append(row_idx)
+
             title = m.get("title", "")
             if doc_idx not in self.doc_titles:
+                # 保留原始 title 給前端顯示用（不要 normalize）
                 self.doc_titles[doc_idx] = title
-            key = title.strip().lower()
+
+            key = _normalize_title(title)
             if key:
                 self.title2docs[key].append(doc_idx)
 
@@ -170,9 +214,11 @@ class IndexResources:
         3. Profiling: Calculates the global mean (Centroid) of these document vectors.
 
         Args:
-            titles (List[str]): List of exact paper titles provided by the user.
+            titles (List[str]): List of paper titles provided by the user.
+                                Matching is case-insensitive and tolerant to whitespace differences
+                                (line breaks / multiple spaces are collapsed).
 
-        Returns:
+        Returns: 
             np.ndarray: The normalized user query vector ready for vector search.
 
         Raises:
@@ -180,13 +226,14 @@ class IndexResources:
         """
         doc_indices: List[int] = []
         for t in titles:
-            key = t.strip().lower()
+            key = _normalize_title(t)
             if not key:
                 continue
             doc_indices.extend(self.title2docs.get(key, []))
         doc_indices = sorted(set(doc_indices))
-
+        
         if not doc_indices:
+            print(doc_indices)
             raise ValueError("No documents found for given titles.")
 
         doc_vecs = []
@@ -583,13 +630,16 @@ class IndexResources:
         constituent chunks found in the search results. This assumes that if *any* part of a paper is highly relevant, the whole paper is worth recommending.
 
         Args:
-            scores (np.ndarray): Similarity scores from vector search.
-            idx (np.ndarray): Corresponding chunk indices.
-            exclude_docs (set | None): Set of doc_idxs to filter out (e.g., the query paper itself).
+            scores (Sequence[float] | np.ndarray): Similarity scores from vector search.
+            idx (Sequence[int] | np.ndarray): Corresponding chunk row indices.
+            exclude_docs (set[int] | None): Doc indices to filter out (e.g., seed papers).
             top_k_docs (int): Number of unique documents to return.
 
         Returns:
-            List[Dict]: Ranked list of unique documents with their best matching score.
+            List[Dict[str, Any]]: Ranked list of unique documents with:
+                - doc_idx: internal document index
+                - score: best (max) chunk score for that doc
+                - title: document title
         """
         if exclude_docs is None:
             exclude_docs = set()
@@ -639,7 +689,10 @@ class IndexResources:
                                     Set higher (e.g., 1000) to improve recall.
 
         Returns:
-            List[Dict]: Ranked list of recommended papers with scores and metadata.
+        List[Dict[str, Any]]: Ranked list of recommended papers with:
+            - doc_idx: internal document index
+            - title: paper title
+            - score: aggregated relevance score (max over chunk scores)
 
         Raises:
             ValueError: If the input titles cannot be mapped to any known documents.
@@ -684,23 +737,30 @@ class IndexResources:
         """
         Unified dispatcher for executing vector searches across different backends.
 
-        Acts as a **Facade** that abstracts away the specific implementation details 
-        (FAISS Flat vs HNSW vs NumPy Baseline) and normalizes their outputs.
+        Acts as a small facade that abstracts away the specific implementation details
+        (FAISS Flat vs HNSW vs NumPy baseline) and returns a normalized (scores, indices)
+        tuple for downstream use.
 
         Args:
-            query_vec (np.ndarray): The query vector.
+            query_vec (np.ndarray): L2-normalized query vector of shape (dim,).
             backend (str): Strategy selector ('faiss_flat', 'faiss_hnsw', 'baseline').
-            top_k (int): Number of results.
-            baseline_mode (str): 'cold' (disk IO) or 'hot' (memory) for baseline benchmarking.
-            ef_search (int | None): Hyperparameter for HNSW search depth.
+            top_k (int): Number of nearest neighbors to retrieve (automatically clipped
+                        to the total number of chunks).
+            baseline_mode (str): Baseline mode: 'cold' (disk I/O each call) or
+                                'hot' (in-memory full-scan), used when backend='baseline'.
+            ef_search (int | None): HNSW search depth hyperparameter. If None, uses
+                                    the global default (HNSW_EF_SEARCH).
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: (scores, indices) - ignoring telemetry data.
+            Tuple[np.ndarray, np.ndarray]:
+                - scores: similarity scores.
+                - indices: vector row indices (into the embedding/metadata arrays).
 
         Raises:
-            RuntimeError: If the index is empty.
+            RuntimeError: If the index contains no chunks.
             ValueError: If an unknown backend string is provided.
         """
+
         total_chunks = len(self.metadata)
         if total_chunks <= 0:
             raise RuntimeError("No chunks in index.")
@@ -728,26 +788,26 @@ class IndexResources:
         """
         Aggregates chunk-level retrieval scores into document-level rankings.
 
-        **Aggregation Strategy: Max Pooling**
-        This method assumes that a document's relevance is determined by its *most relevant* segment. It iterates through the retrieved chunks, grouping them by Document ID, 
-        and assigns the document a score equal to the maximum score of its constituent chunks.
+        **Aggregation Strategy: Max Pooling.**
+        A document's relevance is defined as the maximum score of its constituent
+        chunks found in the search results. This assumes that if any part of a paper
+        is highly relevant, the whole paper is worth recommending.
 
-        This approach effectively surfaces papers that contain specific, highly relevant 
-        details, even if the rest of the paper is unrelated.
+        This approach effectively surfaces papers that contain specific, highly
+        relevant details, even if other sections are less related.
 
         Args:
             scores (np.ndarray): Similarity scores from the vector search engine.
-            idx (np.ndarray): Corresponding chunk indices (row IDs).
-            exclude_docs (Optional[Set[int]]): A set of Document IDs to filter out. 
-                                               (e.g., used to exclude the "Seed Papers" 
-                                               in recommendation tasks to ensure novelty).
-            top_k_docs (int): The final number of unique documents to return.
+            idx (np.ndarray): Corresponding chunk row indices into `self.metadata`.
+            exclude_docs (Optional[Set[int]]): Set of internal `doc_idx` values to
+                            filter out (e.g., seed papers in recommendation tasks).
+            top_k_docs (int): Final number of unique documents to return.
 
         Returns:
-            List[Dict]: A ranked list of document objects, each containing:
-                - `doc_idx`: The internal document ID.
-                - `score`: The aggregated relevance score (max pooling).
-                - `title`: The document title.
+            List[Dict[str, Any]]: Ranked list of document objects, each containing:
+                - `doc_idx`: Internal document index.
+                - `score`: Aggregated relevance score (max over chunk scores).
+                - `title`: Document title.
         """
         if exclude_docs is None:
             exclude_docs = set()

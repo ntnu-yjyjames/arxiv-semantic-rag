@@ -1,7 +1,7 @@
 # arxiv_faiss_zarr/load_data.py
 import os
 import json
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 import pandas as pd
 

@@ -2,6 +2,7 @@
 import requests
 import streamlit as st
 
+from utils.fetch_titles import fetch_titles
 BACKEND_URL = "http://localhost:8000"
 
 st.set_page_config(
@@ -10,17 +11,25 @@ st.set_page_config(
 )
 
 
-def fetch_titles(limit: int = 100):
-    try:
-        resp = requests.get(f"{BACKEND_URL}/titles", params={"limit": limit})
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        st.error(f"Failed to fetch titles from backend: {e}")
-        return []
-
 
 def call_search(titles, backend="faiss_flat", top_k=10):
+    """
+    Invokes the `/search` API endpoint for semantic passage retrieval.
+
+    Unlike `fetch_titles`, this function **propagates exceptions**.
+    The caller (e.g. a UI button callback) is responsible for wrapping this in a
+    `try...except` block to handle network errors (timeouts, 500, etc).
+
+    Args:
+        titles (List[str]): User-selected titles acting as the query seed.
+        backend (str): Strategy selector ('faiss_flat', 'faiss_hnsw', 'baseline').
+        top_k (int): Number of passages/chunks to retrieve.
+
+    Returns:
+        dict: Parsed JSON response containing:
+            - `results`: list of hydrated chunks with metadata.
+            - `backend`, `elapsed_ms`, `memory_rss_mb`, `memory_delta_mb`.
+    """
     payload = {
         "titles": titles,
         "backend": backend,
@@ -32,6 +41,20 @@ def call_search(titles, backend="faiss_flat", top_k=10):
 
 
 def call_recommend(titles, backend="faiss_flat", top_k_docs=10):
+    """
+    Invokes the `/recommend` API endpoint for document-level discovery.
+
+    Sends the user's selected titles to the backend, which computes a profile vector
+    and returns new documents (excluding the seed titles) ranked by semantic relevance.
+
+    Args:
+        titles (List[str]): Seed titles defining the user's interest profile.
+        backend (str): Search backend strategy ('faiss_flat', 'faiss_hnsw', 'baseline').
+        top_k_docs (int): Number of unique documents to recommend.
+
+    Returns:
+        dict: JSON response containing a list of recommended documents under `results`.
+    """
     payload = {
         "titles": titles,
         "backend": backend,
@@ -43,6 +66,18 @@ def call_recommend(titles, backend="faiss_flat", top_k_docs=10):
 
 
 def init_session_state():
+    """
+    Initializes Streamlit's Session State variables for persistence.
+
+    Because Streamlit reruns the entire script on every interaction, these variables 
+    act as a **Client-Side Cache** to store API results. This prevents the app from 
+    unnecessarily re-calling the backend (and incurring cost/latency) just because 
+    the user clicked a different UI element.
+
+    Managed States:
+    - `search_data` (dict | None): Stores the last result from `call_search`.
+    - `rec_data` (dict | None): Stores the last result from `call_recommend`.
+    """
     if "search_data" not in st.session_state:
         st.session_state["search_data"] = None
     if "rec_data" not in st.session_state:
@@ -50,6 +85,40 @@ def init_session_state():
 
 
 def main():
+    """
+    Entry point for the "ArXiv Semantic Search" application page.
+
+    This interface orchestrates a **dual-granularity retrieval pipeline**, allowing
+    researchers to explore the arXiv corpus through both precise passage retrieval
+    and broader document-level recommendations.
+
+    **Functional Workflow:**
+    1. **Query Profiling:** Constructs a dense user-interest vector (in the backend)
+       by averaging embeddings of the selected "seed papers".
+    2. **Backend Configuration:** Lets users choose the vector search backend
+       (Baseline NumPy vs. FAISS Flat vs. HNSW) and tune HNSW-specific settings
+       (e.g., `ef_search`), as well as top-k for passages and papers.
+    3. **Execution:** On button click, issues two API calls:
+       - `/search`: Retrieves top-k semantic passages with performance telemetry.
+       - `/recommend`: Aggregates passage scores to suggest *novel* papers
+         (excluding the seed set).
+
+    **UI Architecture:**
+    - **Sidebar:** Global controls for backend strategy (`backend`, `ef_search`)
+      and result sizes (`top_k` for passages / papers).
+    - **Input Section:** Multi-select + free-text input to define the seed set
+      that drives the user-interest profile.
+    - **Results Dashboard:** A 2-column split view:
+        - **Left (Retrieval):** Displays passage-level contexts plus metrics
+          (latency, RSS, Δ memory).
+        - **Right (Discovery):** Displays document-level recommendations with
+          similarity scores and internal doc IDs.
+
+    **State Management:**
+    - Persists API responses in `st.session_state['search_data']` and
+      `st.session_state['rec_data']` to avoid unnecessary re-calls to the backend
+      when the user only expands/collapses UI elements.
+    """
     init_session_state()
 
     st.title("ArXiv Semantic Search (Flat / HNSW / Baseline)")
