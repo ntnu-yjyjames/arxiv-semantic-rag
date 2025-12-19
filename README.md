@@ -161,8 +161,8 @@ pipelines.
 
 ```bash
 # Clone this repo
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/ntnu-yjyjames/arxiv-semantic-rag.git
+cd arxiv-semantic-rag
 ```
 
 #### Option A – Using conda (example)
