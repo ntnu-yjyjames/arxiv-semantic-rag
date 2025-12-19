@@ -151,6 +151,8 @@ trade-offs between retrieval quality and throughput.
 construction as corpus size increases, ensuring scalable index refresh in CI/CD
 pipelines.
 
+- Additional experiments on **title-level seed mapping** (fuzzy vs Python BM25) and
+  scalability are documented in [`Performance.md`](./Performance.md).
 
 
 ## Installation & Running
