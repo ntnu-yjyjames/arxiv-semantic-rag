@@ -10,7 +10,9 @@ import faiss
 import numpy as np
 import psutil
 import zarr
-
+import re
+from rapidfuzz import process, fuzz
+from rank_bm25 import BM25Okapi
 
 from sentence_transformers import SentenceTransformer
 from indexing.config import EMBED_MODEL_NAME
@@ -22,6 +24,11 @@ INDEX_DIR = "./arxiv_zarr/arxiv_index_demo_transformer"
 # Aligned with building parameters
 HNSW_EF_SEARCH = 64
 
+
+def _tokenize(text: str) -> List[str]:
+    text = text.lower()
+    # 很簡單地按非字母數字切，正式可以再換成更好的 tokenizer
+    return re.findall(r"\w+", text)
 
 def l2_normalize(x: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     """
@@ -58,7 +65,6 @@ def _load_metadata(meta_path: str) -> List[Dict[str, Any]]:
             metadata.append(json.loads(line))
     return metadata
 
-import re
 
 def _normalize_title(text: str) -> str:
     """
@@ -69,10 +75,8 @@ def _normalize_title(text: str) -> str:
     """
     if not isinstance(text, str):
         return ""
-    # 將 \n、\t、多個空白 等全部壓成一個空白
     normalized = re.sub(r"\s+", " ", text)
     return normalized.strip().lower()
-
 
 
 class IndexResources:
@@ -165,12 +169,27 @@ class IndexResources:
             if key:
                 self.title2docs[key].append(doc_idx)
 
+        # fuzzy matching 用的 key 列表：所有 normalized title key
+        self._title_keys = list(self.title2docs.keys())
+
         print(f"[IndexResources] Loaded {len(self.metadata)} chunks, {len(self.doc2rows)} docs.")
         if self.faiss_index_hnsw is None:
             print("[IndexResources] HNSW index not found; only flat + baseline available.")
         # 新增：載入同一個 embedding model，給「查詢問題」用
         print(f"[IndexResources] Loading embedding model for queries: {EMBED_MODEL_NAME}")
         self.query_model = SentenceTransformer(EMBED_MODEL_NAME)
+
+        # title corpus
+        self._title_docs: List[str] = []
+        self._title_doc_indices: List[int] = []
+
+        for doc_idx, title in self.doc_titles.items():
+            self._title_docs.append(title)
+            self._title_doc_indices.append(doc_idx)
+
+        # tokenized corpus
+        tokenized_titles = [_tokenize(t) for t in self._title_docs]
+        self._bm25_title = BM25Okapi(tokenized_titles)
 
 
     # -------- Doc / user 向量 --------
@@ -224,13 +243,17 @@ class IndexResources:
         Raises:
             ValueError: If none of the provided titles can be found in the index.
         """
+
         doc_indices: List[int] = []
         for t in titles:
-            key = _normalize_title(t)
-            if not key:
-                continue
-            doc_indices.extend(self.title2docs.get(key, []))
+            resolved = self.resolve_title_to_doc_indices(t, fuzzy_threshold=90)
+            doc_indices.extend(resolved)
+            print(f"[AGG] input={repr(t)} -> resolved doc_indices={resolved}")
+
         doc_indices = sorted(set(doc_indices))
+        print(f"[AGG] final unique doc_indices={doc_indices}")
+        if not doc_indices:
+            raise ValueError("No documents found for given titles.")
         
         if not doc_indices:
             print(doc_indices)
@@ -244,7 +267,7 @@ class IndexResources:
             except Exception as e:
                 print(f"[WARN] compute_doc_embedding failed for doc {d}: {e}")
                 continue
-
+        
         if not doc_vecs:
             raise ValueError("No valid doc vectors computed.")
 
@@ -666,6 +689,7 @@ class IndexResources:
                 "title": title,
             })
         return results
+    
     def recommend_docs_from_titles(self,
                                    titles,
                                    backend: str = "faiss_flat",
@@ -698,12 +722,10 @@ class IndexResources:
             ValueError: If the input titles cannot be mapped to any known documents.
         """
         # 1) titles -> doc_idx
-        doc_indices = []
+        doc_indices: List[int] = []
         for t in titles:
-            key = t.strip().lower()
-            if not key:
-                continue
-            doc_indices.extend(self.title2docs.get(key, []))
+            resolved = self.resolve_title_to_doc_indices(t, fuzzy_threshold=90)
+            doc_indices.extend(resolved)
         doc_indices = sorted(set(doc_indices))
         exclude_docs = set(doc_indices)
 
@@ -833,7 +855,94 @@ class IndexResources:
                 "title": title,
             })
         return results
+    
 
+    ## fuzzy + BM25 fallback
+    def resolve_title_to_doc_indices(self,
+                                     title: str,
+                                     fuzzy_threshold: int = 90,
+                                     bm25_threshold: float = 5.0) -> List[int]:
+        key = _normalize_title(title)
+        if not key:
+            return []
+
+        # 1) exact
+        if key in self.title2docs:
+            return self.title2docs[key]
+
+        # 2) fuzzy
+        if self._title_keys:
+            match = process.extractOne(
+                key,
+                self._title_keys,
+                scorer=fuzz.ratio,
+                score_cutoff=fuzzy_threshold,
+            )
+            if match:
+                best_key, score, _ = match
+                return self.title2docs[best_key]
+
+        # 3) BM25 fallback on titles
+        if hasattr(self, "_bm25_title"):
+            return self.bm25_search_titles(title, top_n=3, score_threshold=bm25_threshold)
+
+        return []
+    
+    ## BM25 search
+    def bm25_search_titles(self,
+                           query: str,
+                           top_n: int = 5,
+                           score_threshold: float = 5.0) -> List[int]:
+        """
+        BM25 search over paper titles to resolve or expand seed papers.
+
+        Args:
+            query (str): User-provided title-like query or keywords.
+            top_n (int): Max number of candidate docs to return.
+            score_threshold (float): Minimum BM25 score to accept a result.
+
+        Returns:
+            List[int]: List of internal doc_idx values (unique).
+        """
+        if not query.strip():
+            return []
+
+        tokens = _tokenize(query)
+        scores = self._bm25_title.get_scores(tokens)
+        # 取 top_n index
+        idx_sorted = np.argsort(-scores)[:top_n]
+        doc_indices = []
+        for i in idx_sorted:
+            if scores[i] < score_threshold:
+                continue
+            doc_idx = self._title_doc_indices[int(i)]
+            doc_indices.append(doc_idx)
+
+        return sorted(set(doc_indices))
+    
+    def bm25_search_abstracts(self,
+                              query: str,
+                              top_n_docs: int = 100) -> List[int]:
+        """
+        BM25 search over abstracts (or titles+abstracts) to get candidate doc_idx for RAG.
+        """
+        if not query.strip():
+            return []
+
+        tokens = _tokenize(query)
+        scores = self._bm25_abstract.get_scores(tokens)
+        idx_sorted = np.argsort(-scores)[:top_n_docs]
+        doc_indices = []
+        for i in idx_sorted:
+            if scores[i] < 5.0:  # threshold 可再調整
+                continue
+            doc_idx = self._abstract_doc_indices[int(i)]
+            doc_indices.append(doc_idx)
+
+        return sorted(set(doc_indices))
+    
+    
+    
 
 
 @lru_cache(maxsize=1)

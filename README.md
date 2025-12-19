@@ -10,19 +10,19 @@ a local LLM backend (Ollama) for RAG.
 **Tech:** FAISS · NumPy · FastAPI · Streamlit · sentence-transformers · Ollama · GPU acceleration
 
 ## System Features
-- **Semantic Retrieval Systems**
+- **Semantic Retrieval Systems** :
   Dense retrieval over arXiv papers using NumPy (baseline), FAISS Flat (exact),
   and FAISS HNSW (ANN), with consistent evaluation against a ground-truth reference.
 
-- **Recommendation via User Embeddings**
+- **Recommendation via User Embeddings** :
   Paper recommendation by aggregating user-selected seed papers into a
   preference vector and retrieving semantically related, unseen papers.
 
-- **System-Level Benchmarking**
+- **System-Level Benchmarking** :
   Interactive and offline analysis of **latency, memory usage, recall@k**,
   HNSW `efSearch` trade-offs, and **CPU vs GPU build-time scalability**.
 
-- **Retrieval-Augmented Generation (RAG)**
+- **Retrieval-Augmented Generation (RAG)** :
   A thin RAG layer that reuses the retrieval pipeline to ground LLM responses
   via a local Ollama backend.
   

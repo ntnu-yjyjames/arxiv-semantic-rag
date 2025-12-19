@@ -456,5 +456,78 @@ def main():
             </p>
         </div>
         """, unsafe_allow_html=True)
+    st.markdown("---")
+    st.header("Title Matching Scalability: Fuzzy vs Python BM25")
+
+    title_stats = {
+        50000:  {"fuzzy_hit": 94.45, "fuzzy_ms": 1.534,  "bm25_hit": 100.00, "bm25_ms": 55.557},
+        100000: {"fuzzy_hit": 95.15, "fuzzy_ms": 7.017,  "bm25_hit": 99.87, "bm25_ms": 284.429},
+        200000: {"fuzzy_hit": 94.57, "fuzzy_ms": 15.118, "bm25_hit": 100.00, "bm25_ms": 658.822},
+        1000000:{"fuzzy_hit": 95.08, "fuzzy_ms": 75.916, "bm25_hit": 100.00, "bm25_ms": 3601.505},
+    }
+
+    rows = []
+    for n, v in title_stats.items():
+        rows.append({"corpus_size": n, "method": "Fuzzy",            "latency_ms": v["fuzzy_ms"]})
+        rows.append({"corpus_size": n, "method": "BM25 (rank_bm25)", "latency_ms": v["bm25_ms"]})
+
+    lat_df = pd.DataFrame(rows)
+
+    st.markdown("**Latency vs Corpus Size (Title Matching)**")
+
+    chart = (
+        alt.Chart(lat_df)
+        .mark_line(point=alt.OverlayMarkDef(size=80))
+        .encode(
+            x=alt.X("corpus_size:Q", title="Corpus Size (titles)"),
+            y=alt.Y(
+                "latency_ms:Q",
+                title="Avg Latency (ms, log scale)",
+                scale=alt.Scale(type="log", domain=[1, 10000]),
+            ),
+            color=alt.Color("method:N", title="Method"),
+            tooltip=[
+                alt.Tooltip("corpus_size:Q", title="Corpus Size"),
+                alt.Tooltip("method:N", title="Method"),
+                alt.Tooltip("latency_ms:Q", title="Latency (ms)", format=".2f"),
+            ],
+        )
+        .properties(height=320)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # -------------------------------
+    # Speedup chart: BM25 / Fuzzy
+    # -------------------------------
+    st.markdown("**BM25 vs Fuzzy: Latency Ratio (Speedup)**")
+
+    speed_rows = []
+    for n, v in title_stats.items():
+        speed_rows.append({
+            "corpus_size": n,
+            "speedup": v["bm25_ms"] / v["fuzzy_ms"],
+        })
+
+    speed_df = pd.DataFrame(speed_rows)
+
+    speed_chart = (
+        alt.Chart(speed_df)
+        .mark_line(point=alt.OverlayMarkDef(size=80))
+        .encode(
+            x=alt.X("corpus_size:Q", title="Corpus Size (titles)"),
+            y=alt.Y("speedup:Q", title="Latency ratio (BM25 / Fuzzy)",scale=alt.Scale(domain=[30,50]),),
+            tooltip=[
+                alt.Tooltip("corpus_size:Q", title="Corpus Size"),
+                alt.Tooltip("speedup:Q", title="BM25 / Fuzzy", format=".1f"),
+            ],
+        )
+        .properties(height=260)
+    )
+
+    st.altair_chart(speed_chart, use_container_width=True)
+
+
+
 if __name__ == "__main__":
     main()

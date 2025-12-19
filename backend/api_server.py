@@ -222,6 +222,7 @@ def rag_answer(req: RagRequest):
             chunks=chunks,
             max_tokens=req.max_tokens,
         )
+        
     except Exception as e:
         logger.error("RAG generation error: %r", e)
         traceback.print_exc()

@@ -149,7 +149,108 @@ estimate hardware requirements for production deployment on the full dataset.
 
 ---
 
-## 5. Appendix: Note on Exact Search (NumPy vs. FAISS Flat)
+
+## 5. Scalability Analysis: Title-Level Seed Mapping (Fuzzy vs Python BM25)
+
+To support the **seed mapping** feature (users selecting specific papers by title),
+we evaluated the trade-off between **hit rate** and **latency** for two sparse
+retrieval approaches:
+
+- **Fuzzy string matching** (`RapidFuzz`, normalization + ratio)
+- **BM25 ranking** (`rank_bm25`, in-memory Python implementation)
+
+**Objective.** Assess whether a pure Python BM25 implementation can sustain
+interactive latency (≈< 100 ms per query) as the title corpus scales from
+50K to 1M entries.
+
+### Benchmark Setup
+
+- **Corpus.** Sampled paper titles from the arXiv-derived index.
+- **Ground truth.** For each base title, the “correct” document is its original `doc_idx`.
+- **Queries.** For each of 200 base titles, we generated several variants
+  (whitespace changes, case changes, truncated titles, minor typos), yielding
+  ~730–740 query strings per corpus size.
+
+A query is counted as a **hit** if the method returns the correct `doc_idx`
+in its candidate list.
+
+### Benchmark Results
+
+| Corpus Size | Method                  | Hit Rate (Seed Variants) | Avg Latency (ms / query) |
+| :---------: | :---------------------- | :----------------------: | :----------------------: |
+| 50K         | Fuzzy (RapidFuzz)       | 94.45%                   | **1.53**                 |
+|             | BM25 (`rank_bm25`)      | **100.00%**              | 55.56                    |
+| 100K        | Fuzzy                   | 95.15%                   | 7.02                     |
+|             | BM25                    | **99.87%**               | 284.43                   |
+| 200K        | Fuzzy                   | 94.57%                   | 15.12                    |
+|             | BM25                    | **100.00%**              | 658.82                   |
+| 1M          | Fuzzy                   | 95.08%                   | 75.92                    |
+|             | BM25                    | **100.00%**              | **3,601.51**             |
+
+### Engineering Insights
+
+1. **Accuracy vs robustness**
+
+   - Across all corpus sizes, **BM25 (`rank_bm25`)** achieved an almost perfect
+     hit rate on the perturbed title set (99.87–100%). For known-item search
+     (users trying to find a specific paper), BM25 behaves very reliably.
+   - **Fuzzy matching** (normalization + RapidFuzz) consistently reached around
+     **95%** hit rate. In our test, the remaining ~5% correspond to more aggressive
+     perturbations (heavy truncation, severe typos). For interactive seed mapping
+     with only a few titles per request, this accuracy is often acceptable in practice.
+
+2. **Scalability limits of Python BM25**
+
+   - At **50K** titles, Python-based BM25 via `rank_bm25` averaged about
+     **55 ms/query**, which is marginally acceptable for lightweight backend tasks.
+   - As the corpus grows to **100K / 200K / 1M**, latency increases roughly linearly:
+
+     - 100K: **284 ms**
+     - 200K: **659 ms**
+     - 1M : **3,601 ms** (≈3.6 seconds)
+
+   - This shows that a Python list–based BM25 implementation with full-corpus
+     scanning is not suitable for interactive online queries at 10^5–10^6 scale.
+
+3. **Relative efficiency: Fuzzy vs Python BM25**
+   - At 1M titles, fuzzy matching averages **~76 ms** per query, whereas BM25
+     averages **~3.6 seconds**—roughly a **50× slowdown** for only a modest
+     accuracy gain (from ≈95% to ≈100%).
+   - In typical seed-mapping scenarios (3–10 titles per request), fuzzy’s latency
+     is entirely acceptable. In contrast, placing Python BM25 on the critical path
+     would dominate end-to-end latency and degrade user experience.
+![Latency ratio of BM25 to Fuzzy across corpus sizes](backend/bench_images/title_matching_speedup_bm25_fuzzy.png)
+     Figure 5 shows the latency ratio (BM25 / Fuzzy) as the title corpus grows:
+    - At 50K titles, BM25 is already ~36× slower than Fuzzy.
+    - At 100K–200K titles, the ratio increases to ~40–44×.
+    - At 1M titles, BM25 is nearly **47×** slower (≈3.6 s vs 76 ms).
+
+
+
+### Design Decision
+
+- For the **seed mapping** use case (users selecting or entering a small number of
+  preferred papers):
+
+  - We adopt **normalization + fuzzy matching (RapidFuzz)** as the default online
+    resolver, achieving **≈95% hit rate with low latency** and good scalability.
+  - BM25 (`rank_bm25`) is retained as an **offline analysis tool**, used to
+    illustrate the theoretical upper bound of lexical ranking and to inform
+    future decisions about integrating a dedicated search engine.
+
+- For future support of **high-precision, low-latency lexical retrieval** or
+  stage-1 candidate generation over a **1M+ corpus**:
+
+  - We do **not** plan to use `rank_bm25` as an online engine. Instead, we would
+    adopt a proper inverted index–based search engine (e.g., **Tantivy** or
+    **Lucene/Elasticsearch**) to avoid per-query O(N) scans.
+  - In that architecture, BM25 would serve as the **first-stage candidate retriever**,
+    and the existing FAISS HNSW/Flat vector indices would remain responsible for
+    second-stage reranking and RAG context selection.
+
+---
+
+## 6. Appendix: Note on Exact Search (NumPy vs. FAISS Flat)
 
 Benchmarks show that **NumPy (~218 ms)** outperforms **FAISS Flat (~1.2 s)** for
 CPU-based exact search on this dataset.
