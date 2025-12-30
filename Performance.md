@@ -17,7 +17,7 @@ This document details the benchmarking methodology, results, and engineering tra
   semantic retrieval systems while isolating retrieval behavior from
   full-text ingestion costs.
 
-* **Embedding Dimension:** 768 (sentence-transformers)
+* **Embedding Dimension:** 384 (`all-MiniLM-L6-v2v`)
 
 * **Metrics:** End-to-end latency (ms), per-query memory allocation (MB),
   and Recall@k (ground truth: NumPy brute-force full scan).
